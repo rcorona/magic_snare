@@ -5,6 +5,7 @@ import glob
 import imageio
 import numpy as np
 import cv2
+import pdb
 from util import get_image_to_tensor_balanced, get_mask_to_tensor
 
 
@@ -271,4 +272,5 @@ class DVRDataset(torch.utils.data.Dataset):
             result["c"] = c
         else:
             result["bbox"] = all_bboxes
+        
         return result

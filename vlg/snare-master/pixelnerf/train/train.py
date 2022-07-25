@@ -3,6 +3,7 @@
 
 import sys
 import os
+import pdb
 
 sys.path.insert(
     0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
@@ -57,6 +58,7 @@ args, conf = util.args.parse_args(extra_args, training=True, default_ray_batch_s
 device = util.get_cuda(args.gpu_id[0])
 
 dset, val_dset, _ = get_split_dataset(args.dataset_format, args.datadir)
+
 print(
     "dset z_near {}, z_far {}, lindisp {}".format(dset.z_near, dset.z_far, dset.lindisp)
 )

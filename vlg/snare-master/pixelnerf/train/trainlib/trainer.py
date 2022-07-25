@@ -17,7 +17,7 @@ class Trainer:
             train_dataset,
             batch_size=args.batch_size,
             shuffle=True,
-            num_workers=8,
+            num_workers=0,
             pin_memory=False,
         )
         self.test_data_loader = torch.utils.data.DataLoader(

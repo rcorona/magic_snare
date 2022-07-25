@@ -1,5 +1,6 @@
 import sys
 import os
+import pdb
 
 sys.path.insert(
     0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
@@ -101,6 +102,7 @@ if args.scale != 1.0:
     H, W = Ht, Wt
 
 net = make_model(conf["model"]).to(device=device)
+
 net.load_weights(args)
 
 renderer = NeRFRenderer.from_conf(
