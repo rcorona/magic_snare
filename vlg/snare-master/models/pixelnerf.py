@@ -6,6 +6,8 @@ import wandb
 import pdb
 import math
 import cv2
+import sys
+from pyhocon import ConfigFactory
 
 import torch
 import torch.nn as nn
@@ -14,11 +16,12 @@ from pytorch_lightning import LightningModule
 import clip
 from torchvision.utils import make_grid
 
-from legoformer import LegoFormerM, LegoFormerS
-from legoformer.util.utils import load_config
 import models.aggregator as agg
+
+# Internal imports
+from pixelnerf.src.model.models import PixelNeRFNet 
+from pixelnerf.src.model import make_model, loss
 from legoformer.model.transformer import Encoder
-from legoformer.util.metrics import calculate_iou, calculate_fscore
 
 ## From https://pytorch.org/tutorials/beginner/transformer_tutorial.html
 class PositionalEncoding(nn.Module):
@@ -42,7 +45,7 @@ class PositionalEncoding(nn.Module):
         return self.pe[:x.size(0)]
 ##
 
-class TransformerClassifier(LightningModule):
+class PixelNeRFClassifier(LightningModule):
 
     def __init__(self, cfg, train_ds=None, val_ds=None):
         self.optimizer = None
@@ -51,16 +54,8 @@ class TransformerClassifier(LightningModule):
         self.cfg = cfg
         self.dropout = self.cfg['train']['dropout']
 
-        # Determines the modalities used by the model. 
-        self.feats_backbone = self.cfg['train']['feats_backbone']
-
-        if self.feats_backbone == 'clip' or self.feats_backbone == 'multimodal': 
-            self.use_imgs = True
-        else: 
-            self.use_imgs = True
-
-        # Fine-tuned or frozen Legoformer/CLIP
-        self.frozen_legoformer = self.cfg['transformer']['freeze_legoformer']
+        # Fine-tuned or frozen PixelNeRF/CLIP
+        self.frozen_pixelnerf = self.cfg['pixelnerf']['freeze_pixelnerf']
         self.frozen_clip = self.cfg['transformer']['freeze_clip']
 
         # Constants
@@ -68,22 +63,7 @@ class TransformerClassifier(LightningModule):
         self.lang_feat_dim = 512
         self.feat_dim = 256
         self.num_views = 8
-
-        # Determine dimension of object features. 
-        if self.feats_backbone == 'legoformer': 
-            if self.cfg['transformer']['xyz_embeddings']:
-                self.obj_feat_dim = 32 * 3 
-            else: 
-                self.obj_feat_dim = 768
-
-        elif self.feats_backbone == 'pix2vox': 
-            self.obj_feat_dim = 8192
-
-        # Bypass this in case we want to directly use VGG16 embeddings. 
-        if self.cfg['transformer']['skip_legoformer']:            
-            self.obj_feat_dim = 4096
-
-        print('Using obj_feat_dim: {}'.format(self.obj_feat_dim))
+        self.obj_feat_dim = 768
 
         # build network
         self.build_model()
@@ -123,23 +103,16 @@ class TransformerClassifier(LightningModule):
             
     def build_model(self):
         
-        # Determine if single or multiview legoformer. 
-        if self.cfg['data']['n_views'] == 1:
-            legoformer_class = LegoFormerS
-            ckpt_path = self.cfg['legoformer_paths']['legoformer_s']
-            cfg_path = os.path.join(self.cfg['legoformer_paths']['cfg'], 'legoformer_s.yaml')
-        else:
-            legoformer_class = LegoFormerM
-            ckpt_path = self.cfg['legoformer_paths']['legoformer_m']
-            cfg_path = os.path.join(self.cfg['legoformer_paths']['cfg'], 'legoformer_m.yaml')
+        # Load pre-trained PixelNeRF 
+        pn_cfg = ConfigFactory.parse_file(self.cfg['pixelnerf']['pn_cfg'])
+        self.pixelnerf = make_model(pn_cfg["model"])
 
-        # Load pre-trained legoformer. 
-        cfg = load_config(cfg_path)
-        self.legoformer = legoformer_class.load_from_checkpoint(ckpt_path, config=cfg)
+        pn_state_dict = torch.load(self.cfg['pixelnerf']['pn_checkpoint'], map_location='cuda:0')
+        self.pixelnerf.load_state_dict(pn_state_dict, strict=True)
 
         # Freeze if desired. 
-        if self.frozen_legoformer: 
-            for p in self.legoformer.parameters(): 
+        if self.frozen_pixelnerf: 
+            for p in self.pixelnerf.parameters(): 
                 p.requires_grad = False
 
         # CLIP-based langauge model. Frozen. # TODO Do we want to add option to fine-tune?  
@@ -154,14 +127,6 @@ class TransformerClassifier(LightningModule):
         agg_cfg['input_dim'] = self.img_feat_dim
         self.aggregator_type = self.cfg['train']['aggregator']['type']
         self.aggregator = agg.names[self.aggregator_type](agg_cfg)
-
-        # image encoder
-        if self.use_imgs:  
-            self.img_fc = nn.Sequential(
-                nn.Linear(self.img_feat_dim, self.feat_dim), 
-                nn.GELU(), 
-                nn.LayerNorm(self.feat_dim)
-            )
 
         # language encoder
         self.lang_fc = nn.Sequential(
@@ -185,14 +150,8 @@ class TransformerClassifier(LightningModule):
         self.positional_encoding = PositionalEncoding(self.feat_dim, self.dropout)
 
         # Classification token. 
-        #self.cls_token = nn.Parameter(torch.normal(0.0, 1.0, (1, self.feat_dim)))
         self.cls_token = nn.Parameter(torch.normal(0.0, 1.0, (1, self.feat_dim)))
 
-        ## TODO remove
-        self.transformer_mlp = nn.Sequential(nn.Linear(512 * 4, 512), nn.ReLU())
-        self.obj1_token = torch.normal(0.0, 1.0, (1, self.feat_dim)).to('cuda')
-        self.obj2_token = torch.normal(0.0, 1.0, (1, self.feat_dim)).to('cuda')
-       
         # Vision & Language stream. 
         self.vl_mlp = nn.Sequential(
             nn.Linear(self.lang_feat_dim + self.img_feat_dim, 512), 
@@ -208,8 +167,6 @@ class TransformerClassifier(LightningModule):
             nn.ReLU(True),
             nn.Dropout(self.dropout),
         )
-
-        ##
 
         # CLS layers for classification
         cls_in_dim = self.feat_dim * 2 if not self.cfg['transformer']['skip_clip'] else self.feat_dim
@@ -317,20 +274,17 @@ class TransformerClassifier(LightningModule):
     def forward(self, batch):
         
         # Unpack features.  
-        img_feats = batch['img_feats'] if 'img_feats' in batch else None        
-        obj_feats = batch['obj_feats'] if 'obj_feats' in batch else None
         imgs = batch['images'] if 'images' in batch else None
-        vgg16_feats = batch['vgg16_feats'] if 'vgg16_feats' in batch else None
         lang_tokens = batch['lang_tokens'].cuda()
-        voxel_maps = batch['voxel_maps'] if 'voxel_maps' in batch else None
-        voxel_masks= batch['voxel_masks'] if 'voxel_masks' in batch else None
 
         ans = batch['ans'].cuda()
         (key1, key2) =  batch['keys']
         annotation = batch['annotation']
         is_visual = batch['is_visual']
 
-        # TODO do we want to feed all of these into transformer, or just the aggregate? 
+        # TODO get image encoding from pixelnerf. 
+        pdb.set_trace()
+
         # Load, aggregate, and process img features. 
         if img_feats: 
             img1_n_feats = img_feats[0].to(device=self.device).float()

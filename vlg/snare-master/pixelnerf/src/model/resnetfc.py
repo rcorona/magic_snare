@@ -3,7 +3,7 @@ import torch
 
 #  import torch_scatter
 import torch.autograd.profiler as profiler
-import util
+import pixelnerf.src.util as util
 
 
 # Resnet Blocks

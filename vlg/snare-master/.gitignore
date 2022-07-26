@@ -1,0 +1,9 @@
+pixelnerf/checkpoints
+pixelnerf/data
+pixelnerf/logs
+pixelnerf/visuals
+data/screenshots
+data/*.json
+snap
+*.swp
+__pycache__

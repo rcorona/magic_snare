@@ -6,7 +6,7 @@ from .encoder import ImageEncoder
 from .code import PositionalEncoding
 from .model_util import make_encoder, make_mlp
 import torch.autograd.profiler as profiler
-from util import repeat_interleave
+from pixelnerf.src.util import repeat_interleave
 import os
 import os.path as osp
 import warnings
