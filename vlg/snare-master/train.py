@@ -45,10 +45,6 @@ def main(cfg):
 
         legoformer_cfg = load_config(cfg_path)
 
-        # TODO Generalize to work with pixelnerf too. 
-        # Basically, need to get the cfg.data from the legoformer config and stick it in pixelnerf's
-        # s.t. we can feed it here. 
-
         # Load model and data module
         data_module = ShapeNetDataModule(legoformer_cfg.data)
     else: 
@@ -102,8 +98,8 @@ def main(cfg):
 
     trainer.fit(
         model,
-        train_dataloader=DataLoader(train, batch_size=cfg['train']['batch_size'], num_workers=0),
-        val_dataloaders=DataLoader(valid, batch_size=cfg['train']['batch_size'], num_workers=0),
+        train_dataloader=DataLoader(train, batch_size=cfg['train']['batch_size'], num_workers=16),
+        val_dataloaders=DataLoader(valid, batch_size=cfg['train']['batch_size'], num_workers=16),
     )
 
 if __name__ == "__main__":

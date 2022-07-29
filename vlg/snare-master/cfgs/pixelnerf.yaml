@@ -74,7 +74,7 @@ train:
   random_seed: 42
   log: False
   lr: 0.001
-  batch_size: 320
+  batch_size: 128
   max_epochs: 75
   load_from_last_ckpt: False
   dropout: 0.1

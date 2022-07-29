@@ -63,7 +63,7 @@ class PixelNeRFClassifier(LightningModule):
         self.lang_feat_dim = 512
         self.feat_dim = 256
         self.num_views = 8
-        self.obj_feat_dim = 768
+        self.obj_feat_dim = 8192
 
         # build network
         self.build_model()
@@ -109,6 +109,13 @@ class PixelNeRFClassifier(LightningModule):
 
         pn_state_dict = torch.load(self.cfg['pixelnerf']['pn_checkpoint'], map_location='cuda:0')
         self.pixelnerf.load_state_dict(pn_state_dict, strict=True)
+
+        # Encoder for getting individual image features from pixelnerf encoder. 
+        self.img_fc = nn.Sequential(
+            nn.Linear(self.img_feat_dim, self.feat_dim), 
+            nn.GELU(),
+            nn.LayerNorm(self.feat_dim)
+        )
 
         # Freeze if desired. 
         if self.frozen_pixelnerf: 
@@ -273,8 +280,11 @@ class PixelNeRFClassifier(LightningModule):
 
     def forward(self, batch):
         
-        # Unpack features.  
-        imgs = batch['images'] if 'images' in batch else None
+        """
+        Data unpacking. 
+        """
+        imgs1, imgs2 = batch['images'] if 'images' in batch else None
+        img_feats = batch['img_feats'] if 'img_feats' in batch else None
         lang_tokens = batch['lang_tokens'].cuda()
 
         ans = batch['ans'].cuda()
@@ -282,9 +292,33 @@ class PixelNeRFClassifier(LightningModule):
         annotation = batch['annotation']
         is_visual = batch['is_visual']
 
-        # TODO get image encoding from pixelnerf. 
-        pdb.set_trace()
+        """
+        PixelNeRF Feature extraction. 
+        """
+        # TODO Pixelnerf encoding
+        # TODO incorporate rest of data from dataset, for now using zero tensors!!!
+        poses = torch.zeros((imgs1.shape[0], imgs1.shape[1], 4, 4)).float().cuda()
+        focal = torch.zeros((2,))
+        c = torch.zeros((2,))
 
+        # Extract per-image embeddings from PixelNeRF encoder. 
+        self.pixelnerf.encode(imgs1, poses, focal, c=c)
+        latent1 = self.pixelnerf.encoder.latent
+        
+        self.pixelnerf.encode(imgs2, poses, focal, c=c)
+        latent2 = self.pixelnerf.encoder.latent
+        
+        # Average pool as is done in ResNet-34
+        obj1_n_feats = F.avg_pool2d(latent1, 7).view(latent1.size(0), -1)
+        obj2_n_feats = F.avg_pool2d(latent2, 7).view(latent2.size(0), -1)
+
+        # Bring back to [batch_sz, n_views, dim]
+        obj1_n_feats = obj1_n_feats.view(imgs1.size(0), imgs1.size(1), obj1_n_feats.size(1))
+        obj2_n_feats = obj2_n_feats.view(imgs2.size(0), imgs2.size(1), obj2_n_feats.size(1))
+
+        """
+        CLIP Feature extraction. 
+        """
         # Load, aggregate, and process img features. 
         if img_feats: 
             img1_n_feats = img_feats[0].to(device=self.device).float()
@@ -293,36 +327,7 @@ class PixelNeRFClassifier(LightningModule):
             img1_feats = self.aggregator(img1_n_feats)
             img2_feats = self.aggregator(img2_n_feats)
 
-            # Project into shared embedding space. 
-            #img1_feats = self.img_fc(img1_feats)
-            #img2_feats = self.img_fc(img2_feats)
-
-        # Generate object features using legoformer.  
-        # Right now we assume we've precomputed the VGG16 features and don't use raw images. 
-        if self.cfg['train']['feats_backbone'] == 'legoformer':
-            vgg16_feats1, vgg16_feats2 = vgg16_feats
-            vgg16_feats1, vgg16_feats2 = vgg16_feats1.cuda(), vgg16_feats2.cuda()
-
-            # Potentially skip legoformer all together and use VGG16 features directly. 
-            if not self.cfg['transformer']['skip_legoformer']:
-                # Also optionally get reconstruction output.
-                reconstruction = self.cfg['data']['voxel_reconstruction']
-                xyz_feats = self.cfg['transformer']['xyz_embeddings']
-                obj1_n_feats, obj1_reconstruction = self.legoformer.get_obj_features(vgg16_feats1, xyz_feats, reconstruction)
-                obj2_n_feats, obj2_reconstruction = self.legoformer.get_obj_features(vgg16_feats2, xyz_feats, reconstruction)
-            else: 
-                obj1_n_feats, obj1_reconstruction = vgg16_feats1.squeeze(), None
-                obj2_n_feats, obj2_reconstruction = vgg16_feats2.squeeze(), None
-
-                # Correct for single-view. 
-                if len(obj1_n_feats.shape) == 2:
-                    obj1_n_feats = obj1_n_feats.unsqueeze(1)
-                    obj2_n_feats = obj2_n_feats.unsqueeze(1)
-
-        elif self.cfg['train']['feats_backbone'] == 'pix2vox' or self.cfg['train']['feats_backbone'] == '3d-r2n2': 
-            # Pre-extracted features
-            obj1_n_feats, obj2_n_feats = obj_feats
-
+        # Extract CLIP word-level features. 
         dtype = self.clip.visual.conv1.weight.dtype
         lang_feat = self.clip.token_embedding(lang_tokens.squeeze()).type(dtype)
         lang_feat = lang_feat + self.clip.positional_embedding.type(dtype)
@@ -331,89 +336,53 @@ class PixelNeRFClassifier(LightningModule):
         lang_feat = lang_feat.permute(1, 0, 2)
         lang_feat = self.clip.ln_final(lang_feat)
 
-        # lang encoding with clip. # TODO Why doesn't CLIP mask zero-tokens? 
-        if not self.cfg['transformer']['skip_clip']:
-            
-            # Aggregate CLIP langauge. 
-            agg_lang_feat = lang_feat[torch.arange(lang_feat.shape[0]), lang_tokens.squeeze().argmax(dim=-1)] @ self.clip.text_projection
-
-            """
-            Separate stream v&l. 
-            """
-            vl1_feats = self.vl_mlp(torch.cat([agg_lang_feat, img1_feats], dim=-1))
-            vl2_feats = self.vl_mlp(torch.cat([agg_lang_feat, img2_feats], dim=-1))
-            """
-            """
+        # CLIP sentence embedding. 
+        agg_lang_feat = lang_feat[torch.arange(lang_feat.shape[0]), lang_tokens.squeeze().argmax(dim=-1)] @ self.clip.text_projection
 
         """
-        Transformer. 
+        Visiolinguistic Module. 
         """
-        if self.cfg['transformer']['head'] == 'transformer':
+        vl1_feats = self.vl_mlp(torch.cat([agg_lang_feat, img1_feats], dim=-1))
+        vl2_feats = self.vl_mlp(torch.cat([agg_lang_feat, img2_feats], dim=-1))
+
+        """
+        3D-language Transformer. 
+        """
             
-            # To cut compute time, clip tokens by maximal sentence length in batch. 
-            max_length = (lang_tokens.squeeze() != 0).long().sum(dim=-1).max().item()
-            lang_feat = lang_feat[:,:max_length]
-            lang_tokens = lang_tokens.squeeze()[:,:max_length]
+        # To cut compute time, clip tokens by maximal sentence length in batch. 
+        max_length = (lang_tokens.squeeze() != 0).long().sum(dim=-1).max().item()
+        lang_feat = lang_feat[:,:max_length]
+        lang_tokens = lang_tokens.squeeze()[:,:max_length]
 
-            lang_feat = lang_feat.float()
+        lang_feat = lang_feat.float()
 
-            # Project onto shared embedding space. 
-            lang_enc = self.lang_fc(lang_feat)
-            obj1_enc = self.obj_fc(obj1_n_feats)
-            obj2_enc = self.obj_fc(obj2_n_feats)
+        # Project onto shared embedding space. 
+        lang_enc = self.lang_fc(lang_feat)
+        obj1_enc = self.obj_fc(obj1_n_feats)
+        obj2_enc = self.obj_fc(obj2_n_feats)
 
-            # Concatenate tokens for transformer. 
-            bz = lang_feat.size(0)
-            cls_token = self.cls_token.unsqueeze(0).expand(bz, 1, -1)
+        # Concatenate tokens for transformer. 
+        bz = lang_feat.size(0)
+        cls_token = self.cls_token.unsqueeze(0).expand(bz, 1, -1)
 
-            # Compute masks for transformer. 
-            cls_mask = torch.full((bz, 1), False).to('cuda')
-            lang_mask = (lang_tokens == 0.0).to('cuda')
-            obj_mask = torch.full((bz, obj1_enc.size(1)), False).to('cuda')
-            padding_mask = torch.cat([lang_mask, obj_mask, cls_mask], dim=1).to('cuda')
+        # Compute masks for transformer. 
+        cls_mask = torch.full((bz, 1), False).to('cuda')
+        lang_mask = (lang_tokens == 0.0).to('cuda')
+        obj_mask = torch.full((bz, obj1_enc.size(1)), False).to('cuda')
+        padding_mask = torch.cat([lang_mask, obj_mask, cls_mask], dim=1).to('cuda')
 
-            # Pass tokens through transformer itself. 
-            feats1 = torch.cat([lang_enc, obj1_enc, cls_token], dim=1)
-            feats2 = torch.cat([lang_enc, obj2_enc, cls_token], dim=1)
+        # Pass tokens through transformer itself. 
+        feats1 = torch.cat([lang_enc, obj1_enc, cls_token], dim=1)
+        feats2 = torch.cat([lang_enc, obj2_enc, cls_token], dim=1)
 
-            feats1 = self.transformer_pass(feats1, padding_mask, max_length)
-            feats2 = self.transformer_pass(feats2, padding_mask, max_length)
-            
-            if not self.cfg['transformer']['skip_clip']:
-                """
-                Multi-stream fusion. 
-                """
-                feats1 = torch.cat([feats1, vl1_feats], dim=-1)
-                feats2 = torch.cat([feats2, vl2_feats], dim=-1)
-                """
-                """
-
-        else: 
+        feats1 = self.transformer_pass(feats1, padding_mask, max_length)
+        feats2 = self.transformer_pass(feats2, padding_mask, max_length)
         
-            # TODO Deal with multiview case where we have to aggregate. 
-            if len(obj1_n_feats.shape) == 3: 
-                obj1_enc = torch.max(obj1_n_feats, dim=1)[0]
-                obj2_enc = torch.max(obj2_n_feats, dim=1)[0]
-            else: 
-                obj1_enc = obj1_n_feats
-                obj2_enc = obj2_n_feats
-
-            # Project object embeddings. 
-            obj1_enc = self.obj_fc(obj1_enc.squeeze())
-            obj2_enc = self.obj_fc(obj2_enc.squeeze())
-
-            """
-            MLP with visiolinguistic stream.  
-            """
-            feats1 = self.mlp(torch.cat([vl1_feats, obj1_enc], dim=-1))
-            feats2 = self.mlp(torch.cat([vl2_feats, obj2_enc], dim=-1))
-
-            """
-            """
-
-            # Dummy return values. 
-            obj1_reconstruction, obj2_reconstruction = (None, None)
-            lang_mask = None
+        """
+        Fusion between visiolinguistic branch and 3d-language branch. 
+        """
+        feats1 = torch.cat([feats1, vl1_feats], dim=-1)
+        feats2 = torch.cat([feats2, vl2_feats], dim=-1)
 
         # Score each object. 
         score1 = self.cls_fc(feats1)
@@ -422,7 +391,6 @@ class PixelNeRFClassifier(LightningModule):
         probs = torch.cat([score1, score2], dim=-1)
 
         # num steps taken (8 for all views)
-        # TODO what does this do???
         bs = probs.shape[0]
         num_steps = torch.ones((bs)).to(dtype=torch.long, device=probs.device)
         num_steps = num_steps * self.num_views
@@ -431,9 +399,6 @@ class PixelNeRFClassifier(LightningModule):
             'probs': probs,
             'is_visual': is_visual,
             'num_steps': num_steps,
-            'reconstructions': (obj1_reconstruction, obj2_reconstruction),
-            'gt_voxels': voxel_maps,
-            'voxel_masks': voxel_masks, 
             'annotation': annotation,
             'lang_mask': lang_mask
         }
@@ -446,175 +411,6 @@ class PixelNeRFClassifier(LightningModule):
             res['labels'] = None
 
         return res
-
-    # Additionally extracts object 
-    def visualization_forward(self, batch):
-        
-        # Unpack features.  
-        img_feats = batch['img_feats'] if 'img_feats' in batch else None        
-        obj_feats = batch['obj_feats'] if 'obj_feats' in batch else None
-        imgs = batch['images'] if 'images' in batch else None
-        vgg16_feats = batch['vgg16_feats'] if 'vgg16_feats' in batch else None
-        lang_tokens = batch['lang_tokens'].cuda()
-        voxel_maps = batch['voxel_maps'] if 'voxel_maps' in batch else None
-        voxel_masks= batch['voxel_masks'] if 'voxel_masks' in batch else None
-
-        ans = batch['ans'].cuda() if 'ans' in batch else None
-        (key1, key2) =  batch['keys']
-        annotation = batch['annotation']
-        is_visual = batch['is_visual']
-
-        # TODO do we want to feed all of these into transformer, or just the aggregate? 
-        # Load, aggregate, and process img features. 
-        if img_feats: 
-            img1_n_feats = img_feats[0].to(device=self.device).float()
-            img2_n_feats = img_feats[1].to(device=self.device).float()  
-
-            img1_feats = self.aggregator(img1_n_feats)
-            img2_feats = self.aggregator(img2_n_feats)
-
-            # Project into shared embedding space. 
-            #img1_feats = self.img_fc(img1_feats)
-            #img2_feats = self.img_fc(img2_feats)
-
-        # Generate object features using legoformer.  
-        # Right now we assume we've precomputed the VGG16 features and don't use raw images. 
-        if self.cfg['train']['feats_backbone'] == 'legoformer':
-            vgg16_feats1, vgg16_feats2 = vgg16_feats
-            vgg16_feats1, vgg16_feats2 = vgg16_feats1.cuda(), vgg16_feats2.cuda()
-
-            # Potentially skip legoformer all together and use VGG16 features directly. 
-            if not self.cfg['transformer']['skip_legoformer']:
-                
-                # Also optionally get reconstruction output.
-                reconstruction = self.cfg['data']['voxel_reconstruction']
-                xyz_feats = self.cfg['transformer']['xyz_embeddings']
-                obj1_n_feats, obj1_reconstruction = self.legoformer.get_obj_features(vgg16_feats1, xyz_feats, reconstruction)
-                obj2_n_feats, obj2_reconstruction = self.legoformer.get_obj_features(vgg16_feats2, xyz_feats, reconstruction)
-            else: 
-                
-                obj1_n_feats, obj1_reconstruction = vgg16_feats1.squeeze(), None
-                obj2_n_feats, obj2_reconstruction = vgg16_feats2.squeeze(), None
-
-                # Correct for single-view. 
-                if len(obj1_n_feats.shape) == 2:
-                    obj1_n_feats = obj1_n_feats.unsqueeze(1)
-                    obj2_n_feats = obj2_n_feats.unsqueeze(1)
-
-        elif self.cfg['train']['feats_backbone'] == 'pix2vox' or self.cfg['train']['feats_backbone'] == '3d-r2n2': 
-            # Pre-extracted features
-            obj1_n_feats, obj2_n_feats = obj_feats
-
-        # lang encoding with clip. # TODO Why doesn't CLIP mask zero-tokens? 
-        dtype = self.clip.visual.conv1.weight.dtype
-        lang_feat = self.clip.token_embedding(lang_tokens.squeeze()).type(dtype)
-        lang_feat = lang_feat + self.clip.positional_embedding.type(dtype)
-        lang_feat = lang_feat.permute(1, 0, 2)
-        lang_feat = self.clip.transformer(lang_feat)
-        lang_feat = lang_feat.permute(1, 0, 2)
-        lang_feat = self.clip.ln_final(lang_feat)
- 
-        # Aggregate CLIP langauge. 
-        agg_lang_feat = lang_feat[torch.arange(lang_feat.shape[0]), lang_tokens.squeeze().argmax(dim=-1)] @ self.clip.text_projection
-
-        """
-        Transformer. 
-        """
-        if self.cfg['transformer']['head'] == 'transformer':
-            # To cut compute time, clip tokens by maximal sentence length in batch. 
-            max_length = (lang_tokens.squeeze() != 0).long().sum(dim=-1).max().item()
-            lang_feat = lang_feat[:,:max_length]
-            lang_tokens = lang_tokens.squeeze()[:,:max_length]
-
-            lang_feat = lang_feat.float()
-
-            # Project onto shared embedding space. 
-            lang_enc = self.lang_fc(lang_feat)
-            obj1_enc = self.obj_fc(obj1_n_feats)
-            obj2_enc = self.obj_fc(obj2_n_feats)
-
-            # Concatenate tokens for transformer. 
-            bz = lang_feat.size(0)
-            cls_token = self.cls_token.unsqueeze(0).expand(bz, 1, -1)
-
-            # Compute masks for transformer. 
-            cls_mask = torch.full((bz, 1), False).to('cuda')
-            lang_mask = (lang_tokens == 0.0).to('cuda')
-            obj_mask = torch.full((bz, obj1_enc.size(1)), False).to('cuda')
-            padding_mask = torch.cat([lang_mask, obj_mask, cls_mask], dim=1).to('cuda')
-
-            # Pass tokens through transformer itself. 
-            feats1 = torch.cat([lang_enc, obj1_enc, cls_token], dim=1)
-            feats2 = torch.cat([lang_enc, obj2_enc, cls_token], dim=1)
-
-            feats1, attn_weights1 = self.transformer_pass(feats1, padding_mask, max_length, get_weights=True)
-            feats2, attn_weights2 = self.transformer_pass(feats2, padding_mask, max_length, get_weights=True)
-
-            """
-            Separate stream v&l. 
-            """
-            vl1_feats = self.vl_mlp(torch.cat([agg_lang_feat, img1_feats], dim=-1))
-            vl2_feats = self.vl_mlp(torch.cat([agg_lang_feat, img2_feats], dim=-1))
-            """
-            """
-             
-            """
-            Multi-stream fusion. 
-            """
-            score1 = self.cls_fc(torch.cat([feats1, vl1_feats], dim=-1))
-            score2 = self.cls_fc(torch.cat([feats2, vl2_feats], dim=-1))
-            """
-            """
-     
-        else: 
-        
-            # TODO Deal with multiview case where we have to aggregate. 
-            if len(obj1_n_feats) == 3: 
-                obj1_enc = torch.max(obj1_n_feats, dim=1)[0]
-                obj2_enc = torch.max(obj2_n_feats, dim=1)[0]
-            else: 
-                obj1_enc = obj1_n_feats
-                obj2_enc = obj2_n_feats
-
-            """
-            MLP 
-            """
-            feats1 = torch.cat([img1_feats, lang_enc.squeeze(), obj1_enc], dim=-1)
-            feats2 = torch.cat([img2_feats, lang_enc.squeeze(), obj2_enc], dim=-1)
-
-            score1 = self.mlp(feats1)
-            score2 = self.mlp(feats2)
-            """
-            """
-        
-        # Score each object. 
-        probs = torch.cat([score1, score2], dim=-1)
-
-        # num steps taken (8 for all views)
-        # TODO what does this do???
-        bs = lang_enc.shape[0]
-        num_steps = torch.ones((bs)).to(dtype=torch.long, device=lang_enc.device)
-        num_steps = num_steps * self.num_views
-
-        res = {
-            'probs': probs,
-            'is_visual': is_visual,
-            'num_steps': num_steps,
-            'reconstructions': (obj1_reconstruction, obj2_reconstruction),
-            'gt_voxels': voxel_maps,
-            'voxel_masks': voxel_masks, 
-            'attn_maps': (attn_weights1, attn_weights2),
-            'annotation': annotation,
-            'lang_mask': lang_mask
-        }
-
-        if not ans.sum() > 0: 
-            # one-hot labels of answers
-            labels = F.one_hot(ans)
-            res['labels'] = labels
-
-        return res
-
 
     def training_step(self, batch, batch_idx):
         out = self.forward(batch)
@@ -797,12 +593,6 @@ class PixelNeRFClassifier(LightningModule):
     def compute_metrics(self, labels, losses, probs, visual, num_steps, out):
         val_total = probs.shape[0]
         
-        pred_voxels = out['reconstructions'] if 'reconstructions' in out else None
-        gt_voxels = out['gt_voxels'] if 'gt_voxels' in out else None
-        vmasks = out['voxel_masks'] if 'voxel_masks' in out else None
-        
-        # TODO change naming scheme to accomodate for test set as well. 
-
         # Compute correct by index in batch. 
         correct = self.check_correct(labels, probs)
         val_correct = correct.sum().item()
@@ -815,6 +605,7 @@ class PixelNeRFClassifier(LightningModule):
         nonvis_correct = val_correct - visual_correct
 
         val_acc = float(val_correct) / val_total
+        
         val_visual_acc = float(visual_correct) / visual_total
         val_nonvis_acc = float(nonvis_correct) / nonvis_total
 

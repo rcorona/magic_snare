@@ -45,6 +45,8 @@ class CLIPGraspingDataset(torch.utils.data.Dataset):
         # Get transforms for preprocessing ShapeNet images. 
         if legoformer_data_module: 
             self.transforms = legoformer_data_module.get_eval_transforms(legoformer_data_module.cfg_data.transforms)
+        else: 
+            self.transforms = None
 
     def preprocess_obj_feats(self): 
 
@@ -315,13 +317,21 @@ class CLIPGraspingDataset(torch.utils.data.Dataset):
         for idx in img_idxs: 
             img_path =  os.path.join(img_dir, '{}-{}.png'.format(key, idx))
             img = ShapeNetDataset.read_img(img_path)
+            
+            # TODO should we resize to something else? Or do this elsewhere? 
+            img = cv2.resize(img, (64, 64))
+            
             imgs.append(img)
 
         imgs = np.asarray(imgs)
 
         # Add transformations from LegoFormer. THIS STEP IS CRUCIAL.
-        imgs = self.transforms(imgs)
-
+        if self.transforms: 
+            imgs = self.transforms(imgs)
+        else: 
+            # Change ordering of dimensions and get rid of alpha channel. 
+            imgs = np.transpose(imgs, (0, 3, 1, 2))[:,:3,:,:]
+        
         return imgs
 
     def get_vgg16_feats(self, key): 
