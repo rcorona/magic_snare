@@ -283,9 +283,10 @@ class PixelNeRFClassifier(LightningModule):
         """
         Data unpacking. 
         """
-        imgs1, imgs2 = batch['images'] if 'images' in batch else None
-        img_feats = batch['img_feats'] if 'img_feats' in batch else None
+        imgs1, imgs2 = batch['images']
+        img_feats = batch['img_feats']
         lang_tokens = batch['lang_tokens'].cuda()
+        poses1, poses2 = batch['poses']
 
         ans = batch['ans'].cuda()
         (key1, key2) =  batch['keys']
@@ -295,17 +296,15 @@ class PixelNeRFClassifier(LightningModule):
         """
         PixelNeRF Feature extraction. 
         """
-        # TODO Pixelnerf encoding
-        # TODO incorporate rest of data from dataset, for now using zero tensors!!!
-        poses = torch.zeros((imgs1.shape[0], imgs1.shape[1], 4, 4)).float().cuda()
-        focal = torch.zeros((2,))
-        c = torch.zeros((2,))
+
+        # TODO Should we move elsewhere to make more generalizable? 
+        focal = torch.tensor((3.7321,)) 
 
         # Extract per-image embeddings from PixelNeRF encoder. 
-        self.pixelnerf.encode(imgs1, poses, focal, c=c)
+        self.pixelnerf.encode(imgs1, poses1.cuda(), focal, c=None)
         latent1 = self.pixelnerf.encoder.latent
         
-        self.pixelnerf.encode(imgs2, poses, focal, c=c)
+        self.pixelnerf.encode(imgs2, poses2.cuda(), focal, c=None)
         latent2 = self.pixelnerf.encoder.latent
         
         # Average pool as is done in ResNet-34

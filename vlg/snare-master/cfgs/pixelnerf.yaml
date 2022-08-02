@@ -49,6 +49,7 @@ pixelnerf:
   pn_cfg: '${root_dir}/pixelnerf/conf/exp/sn64.conf'
   pn_checkpoint: '${root_dir}/pixelnerf/checkpoints/sn64/pixel_nerf_latest'
   freeze_pixelnerf: True
+  camera_param_path: '${root_dir}/data/cameras.npy'
 
 transformer:
   lr: 0.001

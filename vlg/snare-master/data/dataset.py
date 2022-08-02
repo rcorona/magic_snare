@@ -19,7 +19,7 @@ from data.verify_shapenet import get_snare_objs
 
 class CLIPGraspingDataset(torch.utils.data.Dataset):
 
-    def __init__(self, cfg, mode='train', legoformer_data_module=None):
+    def __init__(self, cfg, mode='train', legoformer_data_module=None, camera_params=None):
         self.total_views = 14
         self.cfg = cfg
         self.mode = mode
@@ -35,6 +35,18 @@ class CLIPGraspingDataset(torch.utils.data.Dataset):
 
         # Paths to ShapeNet rendered images. 
         self.shapenet_path = os.path.join(self.cfg['root_dir'], 'data/screenshots') 
+
+        # Keep camera parameters if they are given. (Used for PixelNeRF)
+        if camera_params: 
+            self.camera_params = np.load(camera_params, allow_pickle=True).item()
+            self._coord_trans_world = torch.tensor(
+                [[1, 0, 0, 0], [0, 0, -1, 0], [0, 1, 0, 0], [0, 0, 0, 1]],
+                dtype=torch.float32,
+            )
+            self._coord_trans_cam = torch.tensor(
+                [[1, 0, 0, 0], [0, -1, 0, 0], [0, 0, -1, 0], [0, 0, 0, 1]],
+                dtype=torch.float32,
+            )
 
         # Use images during loading or not (if feeding straight into LegoFormer). 
         if self.cfg['train']['model'] == 'transformer': # TODO generalize to pixelnerf.  
@@ -392,6 +404,57 @@ class CLIPGraspingDataset(torch.utils.data.Dataset):
         # Select view indexes randomly # TODO need to select them consistently for evaluation.
         view_idxs1 = np.random.choice(8, self.n_views, replace=False)
         view_idxs2 = np.random.choice(8, self.n_views, replace=False)
+
+        # Get camera parameters for selected views.
+        focals1, focals2 = [], []
+        poses1, poses2 = [], []
+
+        for i in range(self.n_views):
+            
+            idx1, idx2 = view_idxs1[i], view_idxs2[i]
+
+            # Get poses matrices.
+            pose1 = self.camera_params['world_mat_inv_{}'.format(idx1)]
+            pose2 = self.camera_params['world_mat_inv_{}'.format(idx2)]
+
+            pose1 = (
+                self._coord_trans_world
+                @ torch.tensor(pose1, dtype=torch.float32)
+                @ self._coord_trans_cam
+            )
+
+            pose2 = (
+                self._coord_trans_world
+                @ torch.tensor(pose1, dtype=torch.float32).clone().detach()
+                @ self._coord_trans_cam
+            )
+
+            poses1.append(pose1)
+            poses2.append(pose2)
+
+            # Get focal lengths from camera intrinsic matrix. # TODO Do we need this?
+            """ 
+            intr_mtx1 = self.camera_params['camera_mat_{}'.format(idx1)]
+            intr_mtx2 = self.camera_params['camera_mat_{}'.format(idx2)]
+
+            fx1 = intr_mtx1[0,0] 
+            fx2 = intr_mtx2[0,0]
+
+            focals1.append(fx1)
+            focals2.append(fx2)
+            """
+
+        # TODO Do we need this?
+        """
+        # Package parameters for features.
+        focals1 = torch.tensor(focals1)
+        focals2 = torch.tensor(focals2)
+        feats['focals'] = (focals1, focals2)
+        """
+
+        poses1 = torch.stack(poses1)
+        poses2 = torch.stack(poses2)
+        feats['poses'] = (poses1, poses2)
 
         ## Img feats
         # For CLIP filter to use only desired amount of views (in this case 8). 

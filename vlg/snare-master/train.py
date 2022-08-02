@@ -37,7 +37,10 @@ def main(cfg):
     last_checkpoint = last_checkpoint_path \
         if os.path.exists(last_checkpoint_path) and cfg['train']['load_from_last_ckpt'] else None
 
-    ## Need legoformer config for both tasks. 
+    ## Load data specific to LegoFormer or PixelNeRF.
+    data_module = None
+    camera_params = None
+
     if cfg['train']['model'] == 'transformer':
         legoformer_class = LegoFormerM
         cfg_path = os.path.join(cfg['legoformer_paths']['cfg'], 'legoformer_m.yaml')
@@ -47,13 +50,16 @@ def main(cfg):
 
         # Load model and data module
         data_module = ShapeNetDataModule(legoformer_cfg.data)
-    else: 
-        data_module = None
+    
+    elif cfg['train']['model'] == 'pixelnerf':
+        
+        # Load camera parameters for pixelnerf. 
+        camera_params = cfg['pixelnerf']['camera_param_path']
 
     # dataset
-    train = CLIPGraspingDataset(cfg, mode='train', legoformer_data_module=data_module)
-    valid = CLIPGraspingDataset(cfg, mode='valid')
-    test = CLIPGraspingDataset(cfg, mode='test')
+    train = CLIPGraspingDataset(cfg, mode='train', legoformer_data_module=data_module, camera_params=camera_params)
+    valid = CLIPGraspingDataset(cfg, mode='valid', camera_params=camera_params)
+    test = CLIPGraspingDataset(cfg, mode='test', camera_params=camera_params)
 
     fname = '{epoch:04d}-{val_acc:.5f}'
 
