@@ -99,8 +99,8 @@ def main(cfg):
 
     trainer.fit(
         model,
-        train_dataloader=DataLoader(train, batch_size=cfg['train']['batch_size'], num_workers=4),
-        val_dataloaders=DataLoader(valid, batch_size=cfg['train']['batch_size'], num_workers=4),
+        train_dataloader=DataLoader(train, batch_size=cfg['train']['batch_size'], num_workers=2),
+        val_dataloaders=DataLoader(valid, batch_size=cfg['train']['batch_size'], num_workers=2),
     )
 
 if __name__ == "__main__":

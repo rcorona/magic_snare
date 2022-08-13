@@ -402,10 +402,51 @@ class CLIPGraspingDataset(torch.utils.data.Dataset):
 
         print(f"Loaded Entries. {self.mode}: {len(self.data)} entries")
 
+    def unpack_clip_img_feats(self):
+        """
+        Load CLIP features to drive in per-object files so that we can use more DataLoader workers. 
+        """
+
+        # Load the single feature file itself. 
+        with open(self.cfg['data']['clip_img_feats'], 'r') as f:     
+            img_feats = json.load(f)
+
+        # Get all unique object IDs and the number of views. 
+        object_ids = set()
+        view_ids = set()
+
+        for view_key in img_feats.keys(): 
+            obj, view = view_key.split('-')
+
+            object_ids.add(obj)
+            view_ids.add(int(view))
+
+        # Get ordered list of views for feature ordering. 
+        views = list(view_ids)
+        views.sort()
+
+        # Store features for all views for each object into a numpy array. 
+        for obj_id in tqdm(object_ids): 
+
+            # Will hold CLIP feature. 
+            obj_feats = np.zeros((len(views), 512))
+
+            # Iterate over views to get pertinent features for object views. 
+            for view in views: 
+
+                # Load feature and store it. 
+                obj_view_name = '{}-{}'.format(obj_id, view)
+                obj_feats[view] = np.asarray(img_feats[obj_view_name])
+
+            # Write numpy array to disk. 
+            feat_path = os.path.join(self.cfg['data']['clip_img_feat_dir'], '{}.npy'.format(obj_id))
+            np.save(feat_path, obj_feats)
+
     def load_extracted_features(self):
 
         # Determine which features to use. 
-        self.use_lang_feats = self.cfg['train']['model'] != 'transformer'
+        model_type = self.cfg['train']['model']
+        self.use_lang_feats = not (model_type == 'transformer' or model_type == 'pixelnerf')
         self.use_img_feats = True# TODO = self.feats_backbone == "clip" or self.feats_backbone == 'multimodal' 
         
         # Load pre-trained CLIP language features if not using transformer model.  
@@ -414,10 +455,16 @@ class CLIPGraspingDataset(torch.utils.data.Dataset):
             with open(lang_feats_path, 'r') as f:
                 self.lang_feats = json.load(f)
 
-        # Load pre-trained image embeddings if desired.  
+        # Make sure img features have been unpacked to disk if using them.   
         if self.use_img_feats: 
-            with open(self.cfg['data']['clip_img_feats'], 'r') as f:     
-                self.img_feats = json.load(f)
+
+            # Unpack and store if needed. 
+            self.clip_img_feat_dir = self.cfg['data']['clip_img_feat_dir']
+
+            if not os.path.isdir(self.clip_img_feat_dir):
+                os.mkdir(self.clip_img_feat_dir)
+                
+                self.unpack_clip_img_feats()
 
     def __len__(self):
         # Accomodate for larger dataset if different combos are possible. 
@@ -428,12 +475,12 @@ class CLIPGraspingDataset(torch.utils.data.Dataset):
 
     def get_img_feats(self, key):
 
-        img_feats = []
-        for i in range(self.total_views):
-            feat = np.array(self.img_feats[f'{key}-{i}'])
-            img_feats.append(feat)
+        # Load image features for object. 
+        feat_path = os.path.join(self.clip_img_feat_dir, '{}.npy'.format(key))
+        feats = np.load(feat_path)
 
-        return np.array(img_feats)
+        # Return all the desired views. 
+        return feats[np.arange(self.total_views)]
 
     def get_obj_feats(self, obj): 
         file_path = os.path.join(self.shapenet_path, obj, '{}-{}-{}.npy'.format(obj, self.feats_backbone, self.n_views))

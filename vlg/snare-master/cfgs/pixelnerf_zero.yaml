@@ -41,7 +41,9 @@ data:
   voxel_reconstruction: False
 
   clip_lang_feats: '${root_dir}/data/langfeat-512-clipViT32.json'
+  clip_lang_feat_dir: '${root_dir}/data/langfeat-512-clipViT32'
   clip_img_feats: '${root_dir}/data/shapenet-clipViT32-frames.json'
+  clip_img_feat_dir: '${root_dir}/data/shapenet-clipViT32-frames/'
   
   n_views: 8
 
@@ -53,7 +55,7 @@ pixelnerf:
   pn_checkpoint: '${root_dir}/pixelnerf/checkpoints/sn64/pixel_nerf_latest'
   freeze_pixelnerf: True
   camera_param_path: '${root_dir}/data/cameras.npy'
-  feature_dir: '${root_dir}/data/'
+  feature_dir: '${root_dir}/data/pixelnerf_custom_feats'
 
 
 transformer:
@@ -80,8 +82,8 @@ train:
   random_seed: 42
   log: True
   lr: 0.001
-  batch_size: 128
-  max_epochs: 75
+  batch_size: 64
+  max_epochs: 50
   load_from_last_ckpt: False
   dropout: 0.1
   normalize_feats: True
