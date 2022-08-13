@@ -93,6 +93,7 @@ class PixelNeRFClassifier(LightningModule):
         # log with wandb
         self.log_data = self.cfg['train']['log']
         if self.log_data:
+
             self.run = wandb.init(
                 project=self.cfg['wandb']['logger']['project'],
                 config=self.cfg['train'],
@@ -283,10 +284,10 @@ class PixelNeRFClassifier(LightningModule):
         """
         Data unpacking. 
         """
-        imgs1, imgs2 = batch['images']
+        latent1, latent2 = batch['obj_feats']
         img_feats = batch['img_feats']
         lang_tokens = batch['lang_tokens'].cuda()
-        poses1, poses2 = batch['poses']
+        bz = lang_tokens.size(0)
 
         ans = batch['ans'].cuda()
         (key1, key2) =  batch['keys']
@@ -301,19 +302,28 @@ class PixelNeRFClassifier(LightningModule):
         focal = torch.tensor((3.7321,)) 
 
         # Extract per-image embeddings from PixelNeRF encoder. 
-        self.pixelnerf.encode(imgs1, poses1.cuda(), focal, c=None)
+        """
+        self.pixelnerf.encode(imgs1, poses1.cuda(), focal, c=torch.zeros((2,)))
         latent1 = self.pixelnerf.encoder.latent
         
-        self.pixelnerf.encode(imgs2, poses2.cuda(), focal, c=None)
+        self.pixelnerf.encode(imgs2, poses2.cuda(), focal, c=torch.zeros((2,)))
         latent2 = self.pixelnerf.encoder.latent
-        
+        """
+        latent1 = latent1.view(-1, 512, 32, 32).cuda()
+        latent2 = latent2.view(-1, 512, 32, 32).cuda()
+
         # Average pool as is done in ResNet-34
         obj1_n_feats = F.avg_pool2d(latent1, 7).view(latent1.size(0), -1)
         obj2_n_feats = F.avg_pool2d(latent2, 7).view(latent2.size(0), -1)
 
+        # For ablations. 
+        if self.cfg['train']['zero_feature']:
+            obj1_n_feats = obj1_n_feats * 0.0
+            obj2_n_feats = obj2_n_feats * 0.0
+
         # Bring back to [batch_sz, n_views, dim]
-        obj1_n_feats = obj1_n_feats.view(imgs1.size(0), imgs1.size(1), obj1_n_feats.size(1))
-        obj2_n_feats = obj2_n_feats.view(imgs2.size(0), imgs2.size(1), obj2_n_feats.size(1))
+        obj1_n_feats = obj1_n_feats.view(bz, -1, obj1_n_feats.size(1))
+        obj2_n_feats = obj2_n_feats.view(bz, -1, obj2_n_feats.size(1))
 
         """
         CLIP Feature extraction. 
@@ -452,8 +462,8 @@ class PixelNeRFClassifier(LightningModule):
         self.log_dict['tr/acc'] = (correct.sum() / correct.size(0)).detach().cpu().numpy()
 
         # Compute visualization of correctness for some samples for debugging model. 
-        if self.step_num % self.cfg['wandb']['logger']['img_log_freq'] == 0: 
-            self.visualize_examples(batch, out, 20, 'train')
+        if self.step_num % self.cfg['wandb']['logger']['img_log_freq'] == 0:
+            pass#self.visualize_examples(batch, out, 20, 'train')
 
         return dict(
             loss=losses['loss']
@@ -516,8 +526,9 @@ class PixelNeRFClassifier(LightningModule):
     def on_after_backward(self):
 
         if self.log_data:
-
+            pass
             # Log weights and parameters every n training steps. 
+            """
             if self.step_num % self.cfg['wandb']['logger']['param_log_freq'] == 0: 
                 for name, param in self.named_parameters(): 
                     if not param.grad is None:  
@@ -545,12 +556,13 @@ class PixelNeRFClassifier(LightningModule):
                         # Add gradients. 
                         self.log_dict['grads/values/{}'.format(name)] = \
                                 wandb.Histogram(grad)
+            """
 
     def on_train_batch_end(self, trainer, pl_module, batch, batch_idx): 
         
         # Update logs. 
         if self.step_num % self.cfg['wandb']['logger']['acc_log_freq'] == 0: 
-            pass#wandb.log(self.log_dict)
+            wandb.log(self.log_dict)
         
         self.step_num += 1
         log_dict = {'step_num': self.step_num}
@@ -579,7 +591,7 @@ class PixelNeRFClassifier(LightningModule):
 
         # Visualize results for first batch from validation set. 
         if self.val_step_num == 1 and self.epoch_num % self.cfg['wandb']['logger']['val_img_log_epoch_freq'] == 0: 
-            self.visualize_examples(batch, out, 20, 'val')
+            pass#self.visualize_examples(batch, out, 20, 'val')
 
         self.val_step_num += 1
 
@@ -742,7 +754,7 @@ class PixelNeRFClassifier(LightningModule):
             print("------------")
 
         # Add results to log dictionary. 
-        pass#wandb.log(res, self.step_num)
+        wandb.log(res, self.step_num)
 
         return dict(
             val_loss=res[f'{mode}/loss'],

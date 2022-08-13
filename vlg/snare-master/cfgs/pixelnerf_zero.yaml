@@ -30,7 +30,6 @@ wandb:
     activation_log_freq: 500
     val_img_log_epoch_freq: 100000000000
     acc_log_freq: 20
-    log_freq: 20
   saver:
     upload: True
     monitor: 'val_acc'
@@ -54,7 +53,7 @@ pixelnerf:
   pn_checkpoint: '${root_dir}/pixelnerf/checkpoints/sn64/pixel_nerf_latest'
   freeze_pixelnerf: True
   camera_param_path: '${root_dir}/data/cameras.npy'
-  feature_dir: '${root_dir}/data/pixelnerf_custom_feats'
+  feature_dir: '${root_dir}/data/'
 
 
 transformer:
@@ -73,7 +72,7 @@ trainer:
 
 train:
   exps_folder: 'snap'
-  exp_name: 'pixelnerf'
+  exp_name: 'pixelnerf_zero'
   folder: ${train.exp_name}
   run_name: ${train.aggregator.type}
   pretrained_model: ''
@@ -95,7 +94,7 @@ train:
   weight_decay: 0.01
   loss_lambda: 0.5
   task: 'snare'
-  zero_feature: False
+  zero_feature: True
 
   aggregator:
     type: 'maxpool'

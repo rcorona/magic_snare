@@ -51,15 +51,10 @@ def main(cfg):
         # Load model and data module
         data_module = ShapeNetDataModule(legoformer_cfg.data)
     
-    elif cfg['train']['model'] == 'pixelnerf':
-        
-        # Load camera parameters for pixelnerf. 
-        camera_params = cfg['pixelnerf']['camera_param_path']
-
     # dataset
-    train = CLIPGraspingDataset(cfg, mode='train', legoformer_data_module=data_module, camera_params=camera_params)
-    valid = CLIPGraspingDataset(cfg, mode='valid', camera_params=camera_params)
-    test = CLIPGraspingDataset(cfg, mode='test', camera_params=camera_params)
+    train = CLIPGraspingDataset(cfg, mode='train', legoformer_data_module=data_module)
+    valid = CLIPGraspingDataset(cfg, mode='valid')
+    test = CLIPGraspingDataset(cfg, mode='test')
 
     fname = '{epoch:04d}-{val_acc:.5f}'
 
@@ -104,8 +99,8 @@ def main(cfg):
 
     trainer.fit(
         model,
-        train_dataloader=DataLoader(train, batch_size=cfg['train']['batch_size'], num_workers=16),
-        val_dataloaders=DataLoader(valid, batch_size=cfg['train']['batch_size'], num_workers=16),
+        train_dataloader=DataLoader(train, batch_size=cfg['train']['batch_size'], num_workers=4),
+        val_dataloaders=DataLoader(valid, batch_size=cfg['train']['batch_size'], num_workers=4),
     )
 
 if __name__ == "__main__":

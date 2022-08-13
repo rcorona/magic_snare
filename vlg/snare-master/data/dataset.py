@@ -5,6 +5,8 @@ import torch.utils.data
 import clip
 import cv2
 import torchvision.models
+import h5py
+from PIL import Image
 
 import numpy as np
 import gzip
@@ -12,14 +14,18 @@ import json
 import pdb
 import tqdm
 from einops import rearrange
+import pickle
+from tqdm import tqdm
+from pyhocon import ConfigFactory
 
 import legoformer.data as transforms
 from legoformer.data.dataset import ShapeNetDataset
 from data.verify_shapenet import get_snare_objs
+from pixelnerf.src.model import make_model
 
 class CLIPGraspingDataset(torch.utils.data.Dataset):
 
-    def __init__(self, cfg, mode='train', legoformer_data_module=None, camera_params=None):
+    def __init__(self, cfg, mode='train', legoformer_data_module=None, img_feat_file=None, obj2idx_mapping=None):
         self.total_views = 14
         self.cfg = cfg
         self.mode = mode
@@ -33,20 +39,26 @@ class CLIPGraspingDataset(torch.utils.data.Dataset):
         self.load_entries()
         self.load_extracted_features()
 
-        # Paths to ShapeNet rendered images. 
+        # Paths to ShapeNet rendered images, whether original or custom rendered. 
+        if cfg['data']['custom_renders']: 
+            self.img_path = cfg['data']['custom_render_path']
+        else:    
+            self.img_path = os.path.join(self.cfg['root_dir'], 'data/screenshots')
+
+        # Paths to shapenet objects. # TODO Does this code still generalize to LegoFormer model needs? 
         self.shapenet_path = os.path.join(self.cfg['root_dir'], 'data/screenshots') 
 
+        # Get transforms for preprocessing ShapeNet images. 
+        if legoformer_data_module: 
+            self.transforms = legoformer_data_module.get_eval_transforms(legoformer_data_module.cfg_data.transforms)
+        else: 
+            self.transforms = None
+
         # Keep camera parameters if they are given. (Used for PixelNeRF)
-        if camera_params: 
-            self.camera_params = np.load(camera_params, allow_pickle=True).item()
-            self._coord_trans_world = torch.tensor(
-                [[1, 0, 0, 0], [0, 0, -1, 0], [0, 1, 0, 0], [0, 0, 0, 1]],
-                dtype=torch.float32,
-            )
-            self._coord_trans_cam = torch.tensor(
-                [[1, 0, 0, 0], [0, -1, 0, 0], [0, 0, -1, 0], [0, 0, 0, 1]],
-                dtype=torch.float32,
-            )
+        if self.cfg['train']['model'] == 'pixelnerf': 
+            
+            # Load or compute pixelnerf features. 
+            self.load_pixelnerf_data(cfg['pixelnerf']['camera_param_path'])
 
         # Use images during loading or not (if feeding straight into LegoFormer). 
         if self.cfg['train']['model'] == 'transformer': # TODO generalize to pixelnerf.  
@@ -54,11 +66,122 @@ class CLIPGraspingDataset(torch.utils.data.Dataset):
         else: 
             self.use_imgs = False
 
-        # Get transforms for preprocessing ShapeNet images. 
-        if legoformer_data_module: 
-            self.transforms = legoformer_data_module.get_eval_transforms(legoformer_data_module.cfg_data.transforms)
+    def load_pixelnerf_data(self, camera_params):
+
+        # Paths for precomputed pixelnerf features. 
+        self.pixelnerf_feat_dir = self.cfg['pixelnerf']['feature_dir']
+
+        """
+        # Use custom rendering folder. 
+        if self.cfg['data']['custom_renders']:
+            feature_path = os.path.join(feature_dir, 'pixelnerf_features_custom.hdf5')
+            obj2idx_path = os.path.join(feature_dir, 'pixelnerf_obj2idx_custom.pkl')
+
+        # Standard image features. 
         else: 
-            self.transforms = None
+            feature_path = os.path.join(feature_dir, 'pixelnerf_features.hdf5')
+            obj2idx_path = os.path.join(feature_dir, 'pixelnerf_obj2idx.pkl')
+        """
+
+        # Precompute and save to disk if needed. 
+        if not (os.path.isdir(self.pixelnerf_feat_dir)):
+            os.mkdir(self.pixelnerf_feat_dir)
+            self.compute_pixelnerf_features(self.pixelnerf_feat_dir)
+            
+        """
+        # Load them. 
+        self.pixelnerf_feat_file = h5py.File(feature_path, 'r')
+        self.obj2idx = pickle.load(open(obj2idx_path, 'rb'))
+        """
+
+    def compute_pixelnerf_features(self, feature_dir):
+
+        # Load camera parameters. 
+        camera_params = self.cfg['pixelnerf']['camera_param_path']     
+        self.camera_params = np.load(camera_params, allow_pickle=True).item()
+        
+        self._coord_trans_world = torch.tensor(
+            [[1, 0, 0, 0], [0, 0, -1, 0], [0, 1, 0, 0], [0, 0, 0, 1]],
+            dtype=torch.float32,
+        )
+        self._coord_trans_cam = torch.tensor(
+            [[1, 0, 0, 0], [0, -1, 0, 0], [0, 0, -1, 0], [0, 0, 0, 1]],
+            dtype=torch.float32,
+        )
+
+        # Pre-compute camera matrices since these won't change. 
+        self.cam_poses = []
+
+        for i in range(8):
+        
+            # Load inverse of world matrix. 
+            wmi = self.camera_params['world_mat_inv_{}'.format(i)]
+
+            # Compute pose. 
+            pose = (
+                self._coord_trans_world
+                @ torch.tensor(wmi, dtype=torch.float32)
+                @ self._coord_trans_cam
+            )
+
+            self.cam_poses.append(pose.numpy())
+
+        self.cam_poses = np.asarray(self.cam_poses)
+
+
+        # Get the objects we need features for. 
+        snare_objs = list(get_snare_objs())
+
+        # Get object key to feature index mapping. 
+        #self.obj2idx = {snare_objs[i]: i for i in range(len(snare_objs))}
+
+        # Load pre-trained pixelnerf for feature extraction. 
+        pn_cfg = ConfigFactory.parse_file(self.cfg['pixelnerf']['pn_cfg'])
+        pixelnerf = make_model(pn_cfg["model"]).cuda()
+
+        pn_state_dict = torch.load(self.cfg['pixelnerf']['pn_checkpoint'], map_location='cuda:0')
+        pixelnerf.load_state_dict(pn_state_dict, strict=True)
+
+        # Compute features. 
+        #pixelnerf_features = np.zeros((len(snare_objs), self.n_views, 512, 32, 32)).astype(np.float32)
+        print('Pre-computing pixelnerf features...')
+
+        # Camera parameters. 
+        focal = torch.tensor((3.7321,)).cuda()
+        cam_poses = torch.tensor(self.cam_poses).unsqueeze(0).cuda()
+        c = torch.zeros((2,))
+
+        for idx in tqdm(range(len(snare_objs))): 
+            
+            # Get object key. 
+            obj = snare_objs[idx]
+
+            # Load image. 
+            imgs = torch.tensor(self.get_imgs(obj)).unsqueeze(0).cuda()
+
+            # Encode image.
+            with torch.no_grad(): 
+                pixelnerf.encode(imgs, cam_poses, focal, c=c)
+                latent = pixelnerf.encoder.latent
+
+            #pixelnerf_features[idx] = latent.cpu().numpy()
+            # Store features. 
+            feat_path = os.path.join(feature_dir, '{}.npy'.format(obj))
+            np.save(feat_path, latent.cpu().numpy())
+
+        # Write features and object-->id mappings to file. 
+        """
+        feat_file = h5py.File(feature_path, 'w')
+        feat_file.create_dataset('feats', pixelnerf_features.shape, dtype='f', data=pixelnerf_features)
+        feat_file.close()
+        """
+
+        # Save object to feature row mappings. 
+        """
+        mapping_file = open(obj2idx_path, 'wb')
+        pickle.dump(self.obj2idx, mapping_file)
+        mapping_file.close()
+        """
 
     def preprocess_obj_feats(self): 
 
@@ -320,19 +443,32 @@ class CLIPGraspingDataset(torch.utils.data.Dataset):
     def get_imgs(self, key): 
         
         # Object images path. 
-        img_dir = os.path.join(self.shapenet_path, key)
+        img_dir = os.path.join(self.img_path, key)
 
         # Iterate over images and load them. 
         imgs = []
         img_idxs = np.arange(self.total_views)[6:]# TODO we hardcode the standard 8-views for now. 
 
         for idx in img_idxs: 
-            img_path =  os.path.join(img_dir, '{}-{}.png'.format(key, idx))
-            img = ShapeNetDataset.read_img(img_path)
-            
-            # TODO should we resize to something else? Or do this elsewhere? 
-            img = cv2.resize(img, (64, 64))
-            
+
+            # Standard and custom renders have different paths. 
+            if self.cfg['data']['custom_renders']:
+                
+                # Name based on degree of rotation. 
+                degree = "{:03d}".format((idx - 6) * 45)
+                img_path = os.path.join(img_dir, '{}.png'.format(degree))
+
+                # Load image and set white background to fit PixelNeRF distribution. 
+                img = Image.open(img_path).convert("RGBA")
+                background = Image.new('RGBA', img.size, (255,255,255))
+                alpha_composite = Image.alpha_composite(background, img)
+                alpha_composite_3 = alpha_composite.convert('RGB')
+                img = np.asarray(alpha_composite_3).astype(np.float32) / 255.0
+            else: 
+                img_path =  os.path.join(img_dir, '{}-{}.png'.format(key, idx))            
+                img = ShapeNetDataset.read_img(img_path)
+                img = cv2.resize(img, (64, 64))
+
             imgs.append(img)
 
         imgs = np.asarray(imgs)
@@ -343,7 +479,7 @@ class CLIPGraspingDataset(torch.utils.data.Dataset):
         else: 
             # Change ordering of dimensions and get rid of alpha channel. 
             imgs = np.transpose(imgs, (0, 3, 1, 2))[:,:3,:,:]
-        
+
         return imgs
 
     def get_vgg16_feats(self, key): 
@@ -404,57 +540,6 @@ class CLIPGraspingDataset(torch.utils.data.Dataset):
         # Select view indexes randomly # TODO need to select them consistently for evaluation.
         view_idxs1 = np.random.choice(8, self.n_views, replace=False)
         view_idxs2 = np.random.choice(8, self.n_views, replace=False)
-
-        # Get camera parameters for selected views.
-        focals1, focals2 = [], []
-        poses1, poses2 = [], []
-
-        for i in range(self.n_views):
-            
-            idx1, idx2 = view_idxs1[i], view_idxs2[i]
-
-            # Get poses matrices.
-            pose1 = self.camera_params['world_mat_inv_{}'.format(idx1)]
-            pose2 = self.camera_params['world_mat_inv_{}'.format(idx2)]
-
-            pose1 = (
-                self._coord_trans_world
-                @ torch.tensor(pose1, dtype=torch.float32)
-                @ self._coord_trans_cam
-            )
-
-            pose2 = (
-                self._coord_trans_world
-                @ torch.tensor(pose1, dtype=torch.float32).clone().detach()
-                @ self._coord_trans_cam
-            )
-
-            poses1.append(pose1)
-            poses2.append(pose2)
-
-            # Get focal lengths from camera intrinsic matrix. # TODO Do we need this?
-            """ 
-            intr_mtx1 = self.camera_params['camera_mat_{}'.format(idx1)]
-            intr_mtx2 = self.camera_params['camera_mat_{}'.format(idx2)]
-
-            fx1 = intr_mtx1[0,0] 
-            fx2 = intr_mtx2[0,0]
-
-            focals1.append(fx1)
-            focals2.append(fx2)
-            """
-
-        # TODO Do we need this?
-        """
-        # Package parameters for features.
-        focals1 = torch.tensor(focals1)
-        focals2 = torch.tensor(focals2)
-        feats['focals'] = (focals1, focals2)
-        """
-
-        poses1 = torch.stack(poses1)
-        poses2 = torch.stack(poses2)
-        feats['poses'] = (poses1, poses2)
 
         ## Img feats
         # For CLIP filter to use only desired amount of views (in this case 8). 
@@ -529,10 +614,19 @@ class CLIPGraspingDataset(torch.utils.data.Dataset):
             feats['voxel_maps'] = (volume1, volume2)
             feats['voxel_masks'] = (volume1_mask, volume2_mask)
 
-        # TODO Probably don't want this since it slows dataloading. But may need for direct input at some point? 
-        imgs1 = self.get_imgs(key1)
-        imgs2 = self.get_imgs(key2)
+        # Get pixelnerf features if using them. 
+        if self.cfg['train']['model'] == 'pixelnerf':
+        
+            # Get object id in feature map. 
+            """
+            obj1 = self.obj2idx[key1] 
+            obj2 = self.obj2idx[key2]
+            """
+            
+            # Get features for object. 
+            obj1_feats = np.load(os.path.join(self.pixelnerf_feat_dir, '{}.npy'.format(key1)))
+            obj2_feats = np.load(os.path.join(self.pixelnerf_feat_dir, '{}.npy'.format(key2)))
 
-        feats['images'] = (imgs1, imgs2)
+            feats['obj_feats'] = (obj1_feats, obj2_feats)
 
         return feats
