@@ -71,28 +71,10 @@ class CLIPGraspingDataset(torch.utils.data.Dataset):
         # Paths for precomputed pixelnerf features. 
         self.pixelnerf_feat_dir = self.cfg['pixelnerf']['feature_dir']
 
-        """
-        # Use custom rendering folder. 
-        if self.cfg['data']['custom_renders']:
-            feature_path = os.path.join(feature_dir, 'pixelnerf_features_custom.hdf5')
-            obj2idx_path = os.path.join(feature_dir, 'pixelnerf_obj2idx_custom.pkl')
-
-        # Standard image features. 
-        else: 
-            feature_path = os.path.join(feature_dir, 'pixelnerf_features.hdf5')
-            obj2idx_path = os.path.join(feature_dir, 'pixelnerf_obj2idx.pkl')
-        """
-
         # Precompute and save to disk if needed. 
         if not (os.path.isdir(self.pixelnerf_feat_dir)):
             os.mkdir(self.pixelnerf_feat_dir)
             self.compute_pixelnerf_features(self.pixelnerf_feat_dir)
-            
-        """
-        # Load them. 
-        self.pixelnerf_feat_file = h5py.File(feature_path, 'r')
-        self.obj2idx = pickle.load(open(obj2idx_path, 'rb'))
-        """
 
     def compute_pixelnerf_features(self, feature_dir):
 
@@ -128,22 +110,18 @@ class CLIPGraspingDataset(torch.utils.data.Dataset):
 
         self.cam_poses = np.asarray(self.cam_poses)
 
-
         # Get the objects we need features for. 
         snare_objs = list(get_snare_objs())
-
-        # Get object key to feature index mapping. 
-        #self.obj2idx = {snare_objs[i]: i for i in range(len(snare_objs))}
 
         # Load pre-trained pixelnerf for feature extraction. 
         pn_cfg = ConfigFactory.parse_file(self.cfg['pixelnerf']['pn_cfg'])
         pixelnerf = make_model(pn_cfg["model"]).cuda()
+        pixelnerf.eval()
 
         pn_state_dict = torch.load(self.cfg['pixelnerf']['pn_checkpoint'], map_location='cuda:0')
         pixelnerf.load_state_dict(pn_state_dict, strict=True)
 
         # Compute features. 
-        #pixelnerf_features = np.zeros((len(snare_objs), self.n_views, 512, 32, 32)).astype(np.float32)
         print('Pre-computing pixelnerf features...')
 
         # Camera parameters. 
@@ -168,20 +146,6 @@ class CLIPGraspingDataset(torch.utils.data.Dataset):
             # Store features. 
             feat_path = os.path.join(feature_dir, '{}.npy'.format(obj))
             np.save(feat_path, latent.cpu().numpy())
-
-        # Write features and object-->id mappings to file. 
-        """
-        feat_file = h5py.File(feature_path, 'w')
-        feat_file.create_dataset('feats', pixelnerf_features.shape, dtype='f', data=pixelnerf_features)
-        feat_file.close()
-        """
-
-        # Save object to feature row mappings. 
-        """
-        mapping_file = open(obj2idx_path, 'wb')
-        pickle.dump(self.obj2idx, mapping_file)
-        mapping_file.close()
-        """
 
     def preprocess_obj_feats(self): 
 
@@ -663,16 +627,14 @@ class CLIPGraspingDataset(torch.utils.data.Dataset):
 
         # Get pixelnerf features if using them. 
         if self.cfg['train']['model'] == 'pixelnerf':
-        
-            # Get object id in feature map. 
-            """
-            obj1 = self.obj2idx[key1] 
-            obj2 = self.obj2idx[key2]
-            """
             
             # Get features for object. 
             obj1_feats = np.load(os.path.join(self.pixelnerf_feat_dir, '{}.npy'.format(key1)))
             obj2_feats = np.load(os.path.join(self.pixelnerf_feat_dir, '{}.npy'.format(key2)))
+
+            # Get only the views requested. 
+            obj1_feats = obj1_feats[view_idxs1]
+            obj2_feats = obj2_feats[view_idxs2]
 
             feats['obj_feats'] = (obj1_feats, obj2_feats)
 

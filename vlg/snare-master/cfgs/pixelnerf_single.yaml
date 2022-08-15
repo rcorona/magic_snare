@@ -1,0 +1,118 @@
+hydra:
+  run:
+    dir: ${root_dir}/${train.exps_folder}/${train.folder}
+  sweep:
+    dir: ${root_dir}/${train.exps_folder}/
+    subdir: ${train.folder}
+
+root_dir: /home/rcorona/2022/lang_nerf/vlg/snare-master # TODO Modify this as needed. 
+
+tag: default
+seed: 0
+debug: False
+
+eval: 
+  model_checkpoint: ""
+  eval_snare: True
+  eval_reconstruction: False
+  eval_intersection: True
+  num_samples: 20
+
+wandb:
+  logger:
+    entity: snare
+    project: pixelnerf_snare
+    tags: []
+    offline: False
+    run_name: ${train.exp_name}
+    param_log_freq: 500
+    img_log_freq: 1000000000
+    activation_log_freq: 500
+    val_img_log_epoch_freq: 100000000000
+    acc_log_freq: 20
+    log_freq: 20
+  saver:
+    upload: True
+    monitor: 'val_acc'
+
+data:
+  fast_epoch: False
+  amt_data: '${root_dir}/amt/'
+  folds: 'folds_adversarial'
+  voxel_reconstruction: False
+
+  clip_lang_feats: '${root_dir}/data/langfeat-512-clipViT32.json'
+  clip_lang_feat_dir: '${root_dir}/data/langfeat-512-clipViT32'
+  clip_img_feats: '${root_dir}/data/shapenet-clipViT32-frames.json'
+  clip_img_feat_dir: '${root_dir}/data/shapenet-clipViT32-frames/'
+  
+  n_views: 1
+
+  custom_renders: True
+  custom_render_path: '${root_dir}/data/nmr_snare_render/shapenet_images_64_2.7/'
+
+pixelnerf: 
+  pn_cfg: '${root_dir}/pixelnerf/conf/exp/sn64.conf'
+  pn_checkpoint: '${root_dir}/pixelnerf/checkpoints/sn64/pixel_nerf_latest'
+  freeze_pixelnerf: True
+  camera_param_path: '${root_dir}/data/cameras.npy'
+  feature_dir: '${root_dir}/data/pixelnerf_custom_feats'
+
+
+transformer:
+  lr: 0.001
+  warmup_steps: 10000
+  aggregate_lang: False
+  xyz_embeddings: True
+  skip_clip: False
+  optim: 'adamW'
+  layers: 3
+  head: 'transformer'
+  freeze_clip: True
+
+trainer: 
+  max_steps: 10000000
+
+train:
+  exps_folder: 'snap'
+  exp_name: 'pixelnerf'
+  folder: ${train.exp_name}
+  run_name: ${train.aggregator.type}
+  pretrained_model: ''
+  model: 'pixelnerf'
+  random_seed: 42
+  log: True
+  lr: 0.001
+  batch_size: 64
+  max_epochs: 50
+  load_from_last_ckpt: False
+  dropout: 0.1
+  normalize_feats: True
+  pretrained_checkpoint: ""
+  fc_projection_type: "fc"
+  feats_backbone: "pixelnerf"
+  tiny_dataset: False
+  val_freq: 100
+  reconstruction_loss: False
+  weight_decay: 0.01
+  loss_lambda: 0.5
+  task: 'snare'
+  zero_feature: False
+
+  aggregator:
+    type: 'maxpool'
+    index: 0 # zeroth-view for 'index' aggregation type
+
+  rotator:
+    teacher_force: True # during training
+    pretrained_cls: '${root_dir}/exp_may06/clip-single_cls-random_index/checkpoints/epoch=0041-val_acc=0.80161.ckpt'
+    estimate_init_state: True
+    estimate_final_state: True
+
+  loss:
+    est_weight: 1.0
+    rot_weight: 1.0
+    cls_weight: 0.2
+
+val:
+  adversarial_init_view: False

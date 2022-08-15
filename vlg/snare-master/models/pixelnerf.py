@@ -433,32 +433,6 @@ class PixelNeRFClassifier(LightningModule):
 
         # Compute correct.  
         correct = self.check_correct(out['labels'], out['probs'])
-
-         # Additionally evaluate model reconstruction performance. 
-        if self.cfg['data']['voxel_reconstruction']: 
-
-            # Unpack volumes.  
-            pred_voxel1, pred_voxel2 = out['reconstructions']
-            gt_voxel1, gt_voxel2 = out['gt_voxels']
-            vmask1, vmask2 = out['voxel_masks']
-
-            # Binarize for evaluation. 
-            pred_voxel1, pred_voxel2 = pred_voxel1.__ge__(0.3), pred_voxel2.__ge__(0.3)
-            gt_voxel1, gt_voxel2 = gt_voxel1.__ge__(0.5), gt_voxel2.__ge__(0.5)
-            vmask = torch.cat(out['voxel_masks'])
-
-            # Compute F-score and IoU for volumes. 
-            iou1 = calculate_iou(pred_voxel1, gt_voxel1, compute_mean=False)
-            iou2 = calculate_iou(pred_voxel2, gt_voxel2, compute_mean=False)
-            iou = torch.cat([iou1, iou2])
-    
-            # Compute average IoU
-            self.log_dict['tr/iou'] = (iou * vmask).sum() / vmask.sum()
-            # TODO need to mask out invalid gt voxels! 
-
-            #fs1 = calculate_fscore(pred_voxel1, gt_voxel1)
-            #fs2 = calculate_fscore(pred_voxel2, gt_voxel2)
-
         self.log_dict['tr/acc'] = (correct.sum() / correct.size(0)).detach().cpu().numpy()
 
         # Compute visualization of correctness for some samples for debugging model. 
