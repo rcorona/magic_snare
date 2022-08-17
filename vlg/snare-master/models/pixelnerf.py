@@ -15,11 +15,12 @@ import torch.nn.functional as F
 from pytorch_lightning import LightningModule
 import clip
 from torchvision.utils import make_grid
+from torchvision.models.resnet import ResNet, BasicBlock
 
 import models.aggregator as agg
 
 # Internal imports
-from pixelnerf.src.model.models import PixelNeRFNet 
+from pixelnerf.src.model.models import PixelNeRFNet
 from pixelnerf.src.model import make_model, loss
 from legoformer.model.transformer import Encoder
 
@@ -105,11 +106,17 @@ class PixelNeRFClassifier(LightningModule):
     def build_model(self):
         
         # Load pre-trained PixelNeRF 
+        """
         pn_cfg = ConfigFactory.parse_file(self.cfg['pixelnerf']['pn_cfg'])
         self.pixelnerf = make_model(pn_cfg["model"])
 
         pn_state_dict = torch.load(self.cfg['pixelnerf']['pn_checkpoint'], map_location='cuda:0')
         self.pixelnerf.load_state_dict(pn_state_dict, strict=True)
+        """
+
+        # ResNet to extract features from PixelNeRF latent code. 
+        self.pixelnerf_resnet = ResNet(BasicBlock, [1,1,1,1], self.feat_dim)
+        self.pixelnerf_resnet.conv1 = nn.Conv2d(512, 64, kernel_size=7, stride=2, padding=3, bias=False)
 
         # Encoder for getting individual image features from pixelnerf encoder. 
         self.img_fc = nn.Sequential(
@@ -119,9 +126,11 @@ class PixelNeRFClassifier(LightningModule):
         )
 
         # Freeze if desired. 
+        """
         if self.frozen_pixelnerf: 
             for p in self.pixelnerf.parameters(): 
                 p.requires_grad = False
+        """
 
         # CLIP-based langauge model. Frozen. # TODO Do we want to add option to fine-tune?  
         self.clip, _ = clip.load('ViT-B/32', device='cuda')
@@ -312,6 +321,10 @@ class PixelNeRFClassifier(LightningModule):
         latent1 = latent1.view(-1, 512, 32, 32).cuda()
         latent2 = latent2.view(-1, 512, 32, 32).cuda()
 
+        obj1_enc = self.pixelnerf_resnet(latent1).view(bz, -1, self.feat_dim)
+        obj2_enc = self.pixelnerf_resnet(latent2).view(bz, -1, self.feat_dim)
+
+        """
         # Average pool as is done in ResNet-34
         obj1_n_feats = F.avg_pool2d(latent1, 7).view(latent1.size(0), -1)
         obj2_n_feats = F.avg_pool2d(latent2, 7).view(latent2.size(0), -1)
@@ -324,6 +337,7 @@ class PixelNeRFClassifier(LightningModule):
         # Bring back to [batch_sz, n_views, dim]
         obj1_n_feats = obj1_n_feats.view(bz, -1, obj1_n_feats.size(1))
         obj2_n_feats = obj2_n_feats.view(bz, -1, obj2_n_feats.size(1))
+        """
 
         """
         CLIP Feature extraction. 
@@ -367,8 +381,11 @@ class PixelNeRFClassifier(LightningModule):
 
         # Project onto shared embedding space. 
         lang_enc = self.lang_fc(lang_feat)
+
+        """
         obj1_enc = self.obj_fc(obj1_n_feats)
         obj2_enc = self.obj_fc(obj2_n_feats)
+        """
 
         # Concatenate tokens for transformer. 
         bz = lang_feat.size(0)
