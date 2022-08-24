@@ -22,6 +22,8 @@ import legoformer.data as transforms
 from legoformer.data.dataset import ShapeNetDataset
 from data.verify_shapenet import get_snare_objs
 from pixelnerf.src.model import make_model
+from pixelnerf.src.util.util import gen_rays, pose_spherical
+from pixelnerf.src.render.nerf import NeRFRenderer
 
 class CLIPGraspingDataset(torch.utils.data.Dataset):
 
@@ -69,14 +71,23 @@ class CLIPGraspingDataset(torch.utils.data.Dataset):
     def load_pixelnerf_data(self, camera_params):
 
         # Paths for precomputed pixelnerf features. 
-        self.pixelnerf_feat_dir = self.cfg['pixelnerf']['feature_dir']
+        feat_type = self.cfg['pixelnerf']['feat_type']
+
+        if feat_type == 'pre-query':
+            self.pixelnerf_feat_dir = self.cfg['pixelnerf']['feature_dir']
+
+        elif feat_type == 'coarse':
+            self.pixelnerf_feat_dir = self.cfg['pixelnerf']['coarse_feature_dir']
+        
+        elif feat_type == 'fine':
+            self.pixelnerf_feat_dir = self.cfg['pixelnerf']['fine_feature_dir']
 
         # Precompute and save to disk if needed. 
         if not (os.path.isdir(self.pixelnerf_feat_dir)):
             os.mkdir(self.pixelnerf_feat_dir)
-            self.compute_pixelnerf_features(self.pixelnerf_feat_dir)
+            self.compute_pixelnerf_features(self.pixelnerf_feat_dir, feat_type)
 
-    def compute_pixelnerf_features(self, feature_dir):
+    def compute_pixelnerf_features(self, feature_dir, feat_type):
 
         # Load camera parameters. 
         camera_params = self.cfg['pixelnerf']['camera_param_path']     
@@ -125,7 +136,7 @@ class CLIPGraspingDataset(torch.utils.data.Dataset):
         print('Pre-computing pixelnerf features...')
 
         # Camera parameters. 
-        focal = torch.tensor((3.7321,)).cuda()
+        focal = torch.tensor((3.7321,)).cuda() # 119.43
         cam_poses = torch.tensor(self.cam_poses).unsqueeze(0).cuda()
         c = torch.zeros((2,))
 
@@ -140,12 +151,65 @@ class CLIPGraspingDataset(torch.utils.data.Dataset):
             # Encode image.
             with torch.no_grad(): 
                 pixelnerf.encode(imgs, cam_poses, focal, c=c)
-                latent = pixelnerf.encoder.latent
+                
+                # If just using first encoder, then we're done. 
+                if feat_type == 'pre-query':
+                    feat = pixelnerf.encoder.latent
+
+                else: 
+
+                    ray_bz = 50000
+                    renderer = NeRFRenderer.from_conf(
+                        pn_cfg["renderer"], lindisp=False, eval_batch_size=ray_bz,
+                    ).to(device=device)
+
+                    if feat_type == 'coarse':
+                        feat = self.pixelnerf_coarse_features(pixelnerf, renderer, focal)
+
+                    elif feat_type == 'fine':
+                        pass # TODO 
 
             #pixelnerf_features[idx] = latent.cpu().numpy()
             # Store features. 
             feat_path = os.path.join(feature_dir, '{}.npy'.format(obj))
-            np.save(feat_path, latent.cpu().numpy())
+            np.save(feat_path, feat.cpu().numpy())
+
+    def pixelnerf_coarse_features(self, renderer, pixelnerf, focal):
+
+        # TODO Do these need to change for our renderings???
+        # Parameters for generating query poses. 
+        z_near = 1.2
+        z_far = 4.0
+        num_views = 40
+        W = 64
+        H = 64 
+        elevation = -10.0
+        c = None
+        radius = (z_near + z_far) * 0.5
+        scale = 1.0
+
+        # NeRF Renderer. 
+
+        # Sample poses in 360 degrees.  
+        render_poses = torch.stack(
+            [
+                pose_spherical(angle, elevation, radius)
+                for angle in np.linspace(-180, 180, num_views + 1)[:-1]
+            ],
+            0,
+        )  # (NV, 4, 4)
+
+        render_rays = gen_rays(
+            render_poses,
+            W,
+            H,
+            focal * scale,
+            z_near,
+            z_far,
+            c=c * scale if c is not None else None,
+        ).cuda()
+
+        pdb.set_trace()
 
     def preprocess_obj_feats(self): 
 

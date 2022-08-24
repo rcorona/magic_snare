@@ -10,6 +10,7 @@ from pixelnerf.src.util import repeat_interleave
 import os
 import os.path as osp
 import warnings
+import pdb
 
 
 class PixelNeRFNet(torch.nn.Module):
@@ -153,6 +154,7 @@ class PixelNeRFNet(torch.nn.Module):
         NS is number of input views
         :return (SB, B, 4) r g b sigma
         """
+
         with profiler.record_function("model_inference"):
             SB, B, _ = xyz.shape
             NS = self.num_views_per_obj
