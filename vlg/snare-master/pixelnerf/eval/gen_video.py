@@ -70,7 +70,17 @@ dset = get_split_dataset(
     args.dataset_format, args.datadir, want_split=args.split, training=False
 )
 
-data = dset[args.subset]
+objs = set([l.strip() for l in open('/home/rcorona/2022/lang_nerf/vlg/snare-master/snare_objs.txt', 'r')])
+
+for i in tqdm.tqdm(range(len(dset))):
+    
+    obj = dset[i]['path'].split('/')[-1]
+
+    if obj in objs: 
+        data = dset[i]
+        break
+
+#data = dset[args.subset]
 data_path = data["path"]
 print("Data instance loaded:", data_path)
 
@@ -215,6 +225,8 @@ with torch.no_grad():
     for rays in tqdm.tqdm(
         torch.split(render_rays.view(-1, 8), args.ray_batch_size, dim=0)
     ):
+        print(rays.shape)
+
         rgb, _depth = render_par(rays[None])
         all_rgb_fine.append(rgb[0])
     _depth = None

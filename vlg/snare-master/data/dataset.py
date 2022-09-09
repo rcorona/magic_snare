@@ -17,6 +17,7 @@ from einops import rearrange
 import pickle
 from tqdm import tqdm
 from pyhocon import ConfigFactory
+import imageio
 
 import legoformer.data as transforms
 from legoformer.data.dataset import ShapeNetDataset
@@ -24,6 +25,8 @@ from data.verify_shapenet import get_snare_objs
 from pixelnerf.src.model import make_model
 from pixelnerf.src.util.util import gen_rays, pose_spherical
 from pixelnerf.src.render.nerf import NeRFRenderer
+from pixelnerf.src.util import repeat_interleave
+from dotmap import DotMap
 
 class CLIPGraspingDataset(torch.utils.data.Dataset):
 
@@ -84,7 +87,7 @@ class CLIPGraspingDataset(torch.utils.data.Dataset):
 
         # Precompute and save to disk if needed. 
         if not (os.path.isdir(self.pixelnerf_feat_dir)):
-            os.mkdir(self.pixelnerf_feat_dir)
+            #os.mkdir(self.pixelnerf_feat_dir)
             self.compute_pixelnerf_features(self.pixelnerf_feat_dir, feat_type)
 
     def compute_pixelnerf_features(self, feature_dir, feat_type):
@@ -136,14 +139,29 @@ class CLIPGraspingDataset(torch.utils.data.Dataset):
         print('Pre-computing pixelnerf features...')
 
         # Camera parameters. 
-        focal = torch.tensor((3.7321,)).cuda() # 119.43
+        focal = torch.tensor((119.4256,)).cuda() # 119.43 3.7321
         cam_poses = torch.tensor(self.cam_poses).unsqueeze(0).cuda()
-        c = torch.zeros((2,))
+        c = None
 
         for idx in tqdm(range(len(snare_objs))): 
             
             # Get object key. 
             obj = snare_objs[idx]
+
+            """
+            with open('/home/rcorona/data/NMR_Dataset/03001627/test.lst', 'r') as f: 
+                lines = [l.strip() for l in f]
+
+                pdb.set_trace()
+
+                for i in range(len(lines)):
+                    if lines[i] in snare_objs: 
+                        print(lines[i])
+                        print(i)
+                        exit()
+            """
+
+            obj = 'f9c2bc7b4ef896e7146ff63b4c7525d9'
 
             # Load image. 
             imgs = torch.tensor(self.get_imgs(obj)).unsqueeze(0).cuda()
@@ -161,10 +179,10 @@ class CLIPGraspingDataset(torch.utils.data.Dataset):
                     ray_bz = 50000
                     renderer = NeRFRenderer.from_conf(
                         pn_cfg["renderer"], lindisp=False, eval_batch_size=ray_bz,
-                    ).to(device=device)
+                    ).cuda()
 
                     if feat_type == 'coarse':
-                        feat = self.pixelnerf_coarse_features(pixelnerf, renderer, focal)
+                        feat = self.pixelnerf_coarse_features(pixelnerf, renderer, focal, c)
 
                     elif feat_type == 'fine':
                         pass # TODO 
@@ -174,7 +192,148 @@ class CLIPGraspingDataset(torch.utils.data.Dataset):
             feat_path = os.path.join(feature_dir, '{}.npy'.format(obj))
             np.save(feat_path, feat.cpu().numpy())
 
-    def pixelnerf_coarse_features(self, renderer, pixelnerf, focal):
+    def composite(self, z_samp, rays, sb, eval_batch_size, pixelnerf,
+                    num_views_per_obj, coarse=True):
+
+        B, K = z_samp.shape
+
+        deltas = z_samp[:, 1:] - z_samp[:, :-1]  # (B, K-1)
+        delta_inf = rays[:, -1:] - z_samp[:, -1:]
+        deltas = torch.cat([deltas, delta_inf], -1)  # (B, K)
+
+        # (B, K, 3)
+        points = rays[:, None, :3] + z_samp.unsqueeze(2) * rays[:, None, 3:6]
+        points = points.reshape(-1, 3)  # (B*K, 3)
+
+        points = points.reshape(
+            sb, -1, 3
+        )  # (SB, B'*K, 3) B' is real ray batch size
+        eval_batch_dim = 1
+
+        split_points = torch.split(points, eval_batch_size, dim=eval_batch_dim)
+        dim1 = K
+        viewdirs = rays[:, None, 3:6].expand(-1, dim1, -1)  # (B, K, 3)
+
+        viewdirs = viewdirs.reshape(sb, -1, 3)  # (SB, B'*K, 3)
+        split_viewdirs = torch.split(
+            viewdirs, eval_batch_size, dim=eval_batch_dim
+        )
+
+        val_all = []
+
+        for xyz, viewdirs in zip(split_points, split_viewdirs):
+
+            SB, B, _ = xyz.shape
+            NS = 8
+            poses = pixelnerf.poses
+
+            # Transform query points into the camera spaces of the input views
+            xyz = repeat_interleave(xyz, NS)  # (SB*NS, B, 3)
+            xyz_rot = torch.matmul(poses[:, None, :3, :3], xyz.unsqueeze(-1))[
+                ..., 0
+            ]
+
+            xyz = xyz_rot + poses[:, None, :3, 3]
+            z_feature = xyz_rot.reshape(-1, 3)
+            z_feature = pixelnerf.code(z_feature)
+
+            viewdirs = viewdirs.reshape(SB, B, 3, 1)
+            viewdirs = repeat_interleave(viewdirs, NS)  # (SB*NS, B, 3, 1)
+            viewdirs = torch.matmul(
+                poses[:, None, :3, :3], viewdirs
+            )  # (SB*NS, B, 3, 1)
+            viewdirs = viewdirs.reshape(-1, 3)  # (SB*B, 3)
+            z_feature = torch.cat(
+                (z_feature, viewdirs), dim=1
+            )  # (SB*B, 4 or 6)
+
+            mlp_input = z_feature
+
+            # Grab encoder's latent code.
+            uv = -xyz[:, :, :2] / xyz[:, :, 2:]  # (SB, B, 2)
+            uv *= repeat_interleave(
+                pixelnerf.focal.unsqueeze(1), NS if pixelnerf.focal.shape[0] > 1 else 1
+            )
+
+            uv += repeat_interleave(
+                pixelnerf.c.unsqueeze(1), NS if pixelnerf.c.shape[0] > 1 else 1
+            )  # (SB*NS, B, 2)
+            latent = pixelnerf.encoder.index(
+                uv, None, pixelnerf.image_shape
+            )  # (SB * NS, latent, B)
+
+            latent = latent.transpose(1, 2).reshape(
+                -1, pixelnerf.latent_size
+            )  # (SB * NS * B, latent)
+
+            mlp_input = torch.cat((latent, z_feature), dim=-1)
+
+            # Camera frustum culling stuff, currently disabled
+            combine_index = None
+            dim_size = None
+
+            # Run main NeRF network
+            if coarse: 
+                mlp_output = pixelnerf.mlp_coarse(
+                    mlp_input,
+                    combine_inner_dims=(num_views_per_obj, B),
+                    combine_index=combine_index,
+                    dim_size=dim_size,
+                )
+            else: 
+                mlp_output = pixelnerf.mlp_fine(
+                    mlp_input,
+                    combine_inner_dims=(num_views_per_obj, B),
+                    combine_index=combine_index,
+                    dim_size=dim_size,
+                )
+
+            rgb = mlp_output[..., :3]
+            sigma = mlp_output[..., 3:4]
+
+            output_list = [torch.sigmoid(rgb), torch.relu(sigma)]
+            output = torch.cat(output_list, dim=-1)
+            output = output.reshape(SB, B, -1)
+
+            val_all.append(output)
+
+        points = None
+        viewdirs = None
+        # (B*K, 4) OR (SB, B'*K, 4)
+
+        out = torch.cat(val_all, dim=eval_batch_dim)
+        out = out.reshape(B, K, -1)  # (B, K, 4 or 5)
+
+        rgbs = out[..., :3]  # (B, K, 3)
+        sigmas = out[..., 3]  # (B, K)
+
+        alphas = 1 - torch.exp(-deltas * torch.relu(sigmas))  # (B, K)
+        deltas = None
+        sigmas = None
+        alphas_shifted = torch.cat(
+            [torch.ones_like(alphas[:, :1]), 1 - alphas + 1e-10], -1
+        )  # (B, K+1) = [1, a1, a2, ...]
+        T = torch.cumprod(alphas_shifted, -1)  # (B)
+        weights = alphas * T[:, :-1]  # (B, K)
+        alphas = None
+        alphas_shifted = None
+
+        rgb_final = torch.sum(weights.unsqueeze(-1) * rgbs, -2)  # (B, 3)
+        depth_final = torch.sum(weights * z_samp, -1)  # (B)
+        
+        # White background
+        pix_alpha = weights.sum(dim=1)  # (B), pixel alpha
+        rgb_final = rgb_final + 1 - pix_alpha.unsqueeze(-1)  # (B, 3)
+
+        composite = (
+            weights,
+            rgb_final,
+            depth_final,
+        )
+
+        return composite
+
+    def pixelnerf_coarse_features(self, pixelnerf, renderer, focal, c):
 
         # TODO Do these need to change for our renderings???
         # Parameters for generating query poses. 
@@ -183,10 +342,13 @@ class CLIPGraspingDataset(torch.utils.data.Dataset):
         num_views = 40
         W = 64
         H = 64 
-        elevation = -10.0
-        c = None
+        elevation = -30.0
         radius = (z_near + z_far) * 0.5
         scale = 1.0
+        sb = 1
+        num_views_per_obj = 8
+        ray_batch_size = 50000
+        superbatch_size = 1
 
         # NeRF Renderer. 
 
@@ -207,9 +369,65 @@ class CLIPGraspingDataset(torch.utils.data.Dataset):
             z_near,
             z_far,
             c=c * scale if c is not None else None,
-        ).cuda()
+        ).cuda().view(-1, 8)
 
-        pdb.set_trace()
+        all_rgb = []
+
+        for rays in tqdm(torch.split(render_rays.view(-1, 8), ray_batch_size, dim=0)):
+
+            z_coarse = renderer.sample_coarse(rays)
+
+            # Coarse image features. 
+            coarse_composite = self.composite(
+                z_coarse, 
+                rays, 
+                sb, 
+                rays.size(0), 
+                pixelnerf, 
+                num_views_per_obj, 
+                True
+            )
+
+            outputs = renderer._format_outputs(coarse_composite, superbatch_size, False,)
+            outputs = DotMap(outputs,)
+
+            # Fine image features. 
+            all_samps = [z_coarse]
+            all_samps.append(renderer.sample_fine(rays, coarse_composite[0].detach()))
+            all_samps.append(renderer.sample_fine_depth(rays, coarse_composite[2]))
+
+            z_combine = torch.cat(all_samps, dim=-1)  # (B, Kc + Kf)
+            z_combine_sorted, argsort = torch.sort(z_combine, dim=-1)
+
+            fine_composite = self.composite(
+                z_combine_sorted, 
+                rays, 
+                sb, 
+                rays.size(0), 
+                pixelnerf, 
+                num_views_per_obj, 
+                False
+            )
+
+            outputs.fine = renderer._format_outputs(
+                fine_composite, superbatch_size, want_weights=False,
+            )
+
+            rgb, depth = outputs.fine.rgb, outputs.fine.depth
+            all_rgb.append(rgb[0])
+
+        frames = torch.cat(all_rgb).view(-1, 64, 64, 3)
+
+        # Write rendered video.
+        vid_path = '/home/rcorona/2022/lang_nerf/vlg/snare-master/test.mp4' 
+
+        imageio.mimwrite(
+        vid_path, (frames.cpu().numpy() * 255).astype(np.uint8), fps=30, quality=8
+        )
+
+        print('Wrote to: {}'.format(vid_path))
+
+        exit()
 
     def preprocess_obj_feats(self): 
 

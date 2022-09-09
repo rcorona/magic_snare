@@ -6,10 +6,11 @@ https://github.com/kwea123/nerf_pl
 """
 import torch
 import torch.nn.functional as F
-import util
+#import util
 import torch.autograd.profiler as profiler
 from torch.nn import DataParallel
 from dotmap import DotMap
+import pdb
 
 
 class _RenderWrapper(torch.nn.Module):
@@ -29,6 +30,7 @@ class _RenderWrapper(torch.nn.Module):
         outputs = self.renderer(
             self.net, rays, want_weights=want_weights and not self.simple_output
         )
+
         if self.simple_output:
             if self.renderer.using_fine:
                 rgb = outputs.fine.rgb
@@ -167,11 +169,12 @@ class NeRFRenderer(torch.nn.Module):
         :param model should return (B, (r, g, b, sigma)) when called with (B, (x, y, z))
         should also support 'coarse' boolean argument
         :param rays ray [origins (3), directions (3), near (1), far (1)] (B, 8)
-        :param z_samp z positions sampled for each ray (B, K)
+        :param z_samp z posit ions sampled for each ray (B, K)
         :param coarse whether to evaluate using coarse NeRF
         :param sb super-batch dimension; 0 = disable
         :return weights (B, K), rgb (B, 3), depth (B)
         """
+
         with profiler.record_function("renderer_composite"):
             B, K = z_samp.shape
 
@@ -209,6 +212,7 @@ class NeRFRenderer(torch.nn.Module):
                 split_viewdirs = torch.split(
                     viewdirs, eval_batch_size, dim=eval_batch_dim
                 )
+
                 for pnts, dirs in zip(split_points, split_viewdirs):
                     val_all.append(model(pnts, coarse=coarse, viewdirs=dirs))
             else:
@@ -217,6 +221,7 @@ class NeRFRenderer(torch.nn.Module):
             points = None
             viewdirs = None
             # (B*K, 4) OR (SB, B'*K, 4)
+
             out = torch.cat(val_all, dim=eval_batch_dim)
             out = out.reshape(B, K, -1)  # (B, K, 4 or 5)
 
@@ -242,6 +247,7 @@ class NeRFRenderer(torch.nn.Module):
                 # White background
                 pix_alpha = weights.sum(dim=1)  # (B), pixel alpha
                 rgb_final = rgb_final + 1 - pix_alpha.unsqueeze(-1)  # (B, 3)
+            
             return (
                 weights,
                 rgb_final,
@@ -293,6 +299,7 @@ class NeRFRenderer(torch.nn.Module):
                     )  # (B, Kfd)
                 z_combine = torch.cat(all_samps, dim=-1)  # (B, Kc + Kf)
                 z_combine_sorted, argsort = torch.sort(z_combine, dim=-1)
+                
                 fine_composite = self.composite(
                     model, rays, z_combine_sorted, coarse=False, sb=superbatch_size,
                 )

@@ -156,6 +156,7 @@ class PixelNeRFNet(torch.nn.Module):
         """
 
         with profiler.record_function("model_inference"):
+
             SB, B, _ = xyz.shape
             NS = self.num_views_per_obj
 
@@ -209,6 +210,7 @@ class PixelNeRFNet(torch.nn.Module):
                 uv *= repeat_interleave(
                     self.focal.unsqueeze(1), NS if self.focal.shape[0] > 1 else 1
                 )
+
                 uv += repeat_interleave(
                     self.c.unsqueeze(1), NS if self.c.shape[0] > 1 else 1
                 )  # (SB*NS, B, 2)
@@ -248,6 +250,7 @@ class PixelNeRFNet(torch.nn.Module):
                     combine_index=combine_index,
                     dim_size=dim_size,
                 )
+
             else:
                 mlp_output = self.mlp_fine(
                     mlp_input,
@@ -265,6 +268,7 @@ class PixelNeRFNet(torch.nn.Module):
             output_list = [torch.sigmoid(rgb), torch.relu(sigma)]
             output = torch.cat(output_list, dim=-1)
             output = output.reshape(SB, B, -1)
+
         return output
 
     def load_weights(self, args, opt_init=False, strict=True, device=None):
