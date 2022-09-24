@@ -115,7 +115,7 @@ class PixelNeRFClassifier(LightningModule):
         """
 
         # ResNet to extract features from PixelNeRF latent code. 
-        self.pixelnerf_resnet = ResNet(BasicBlock, [1,1,1,1], self.feat_dim)
+        self.pixelnerf_resnet = ResNet(BasicBlock, [1,1,1,1], self.feat_dim - 16) # TODO Remove hardcode cam pose dim. 
         self.pixelnerf_resnet.conv1 = nn.Conv2d(512, 64, kernel_size=7, stride=2, padding=3, bias=False)
 
         # Encoder for getting individual image features from pixelnerf encoder. 
@@ -294,6 +294,7 @@ class PixelNeRFClassifier(LightningModule):
         Data unpacking. 
         """
         latent1, latent2 = batch['obj_feats']
+        cam1, cam2 = batch['obj_cams']
         img_feats = batch['img_feats']
         lang_tokens = batch['lang_tokens'].cuda()
         bz = lang_tokens.size(0)
@@ -321,8 +322,16 @@ class PixelNeRFClassifier(LightningModule):
         latent1 = latent1.view(-1, 512, 32, 32).cuda()
         latent2 = latent2.view(-1, 512, 32, 32).cuda()
 
-        obj1_enc = self.pixelnerf_resnet(latent1).view(bz, -1, self.feat_dim)
-        obj2_enc = self.pixelnerf_resnet(latent2).view(bz, -1, self.feat_dim)
+        # TODO Remove hardcodes for cam pose shape. 
+        obj1_enc = self.pixelnerf_resnet(latent1).view(bz, -1, self.feat_dim - 16) 
+        obj2_enc = self.pixelnerf_resnet(latent2).view(bz, -1, self.feat_dim - 16)
+
+        # Add camera parameters as positional embeddings. 
+        cam1 = cam1.view(bz, obj1_enc.size(1), -1).cuda()
+        cam2 = cam2.view(bz, obj2_enc.size(1), -1).cuda()
+
+        obj1_enc = torch.cat((obj1_enc, cam1), -1)
+        obj2_enc = torch.cat((obj2_enc, cam2), -1)
 
         """
         # Average pool as is done in ResNet-34

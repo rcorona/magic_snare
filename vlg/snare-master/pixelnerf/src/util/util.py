@@ -8,6 +8,7 @@ import torch.nn.functional as F
 import functools
 import math
 import warnings
+import pdb
 
 
 def image_float_to_uint8(img):
@@ -459,6 +460,7 @@ def same_unpad_deconv2d(t, kernel_size=3, stride=1, layer=None):
 
 
 def combine_interleaved(t, inner_dims=(1,), agg_type="average"):
+    pdb.set_trace()
     if len(inner_dims) == 1 and inner_dims[0] == 1:
         return t
     t = t.reshape(-1, *inner_dims, *t.shape[1:])

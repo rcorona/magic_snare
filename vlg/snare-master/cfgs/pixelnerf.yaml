@@ -59,7 +59,7 @@ pixelnerf:
   feature_dir: '${root_dir}/data/pixelnerf_custom_feats'
   coarse_feature_dir: '${root_dir}/data/pixelnerf_coarse_feats'
   fine_feature_dir: '${root_dir}/data/pixelnerf_fine_feats'
-  feat_type: 'coarse'
+  feat_type: 'pre-query'
 
 transformer:
   lr: 0.001

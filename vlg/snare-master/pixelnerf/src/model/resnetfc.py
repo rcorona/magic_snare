@@ -1,5 +1,6 @@
 from torch import nn
 import torch
+import pdb
 
 #  import torch_scatter
 import torch.autograd.profiler as profiler
@@ -129,7 +130,7 @@ class ResnetFC(nn.Module):
         else:
             self.activation = nn.ReLU()
 
-    def forward(self, zx, combine_inner_dims=(1,), combine_index=None, dim_size=None):
+    def forward(self, zx, combine_inner_dims=(1,), combine_index=None, dim_size=None, return_feat=False):
         """
         :param zx (..., d_latent + d_in)
         :param combine_inner_dims Combining dimensions for use with multiview inputs.
@@ -137,6 +138,7 @@ class ResnetFC(nn.Module):
         on dim 1, at combine_layer
         """
         with profiler.record_function("resnetfc_infer"):
+    
             assert zx.size(-1) == self.d_latent + self.d_in
             if self.d_latent > 0:
                 z = zx[..., : self.d_latent]
@@ -181,7 +183,11 @@ class ResnetFC(nn.Module):
 
                 x = self.blocks[blkid](x)
             out = self.lin_out(self.activation(x))
-            return out
+
+            if return_feat: 
+                return out, x
+            else: 
+                return out
 
     @classmethod
     def from_conf(cls, conf, d_in, **kwargs):

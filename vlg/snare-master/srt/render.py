@@ -2,6 +2,7 @@ import torch
 import torch.optim as optim
 import numpy as np
 import imageio
+import pdb
 
 import os, sys, argparse, math
 import yaml, json
@@ -155,7 +156,7 @@ def process_scene(sceneid):
 
     with torch.no_grad():
         z = model.encoder(input_images, input_camera_pos, input_rays)
-                                          
+
         render3d(trainer, render_path, z, input_camera_pos[:, 0],
                  motion=args.motion, transform=transform, resolution=resolution, **render_kwargs)
 

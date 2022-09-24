@@ -85,13 +85,15 @@ class CLIPGraspingDataset(torch.utils.data.Dataset):
         elif feat_type == 'fine':
             self.pixelnerf_feat_dir = self.cfg['pixelnerf']['fine_feature_dir']
 
+        # Load camera parameters for pixelnerf. 
+        self.load_cam_poses()
+
         # Precompute and save to disk if needed. 
         if not (os.path.isdir(self.pixelnerf_feat_dir)):
-            #os.mkdir(self.pixelnerf_feat_dir)
+            os.mkdir(self.pixelnerf_feat_dir)
             self.compute_pixelnerf_features(self.pixelnerf_feat_dir, feat_type)
 
-    def compute_pixelnerf_features(self, feature_dir, feat_type):
-
+    def load_cam_poses(self):
         # Load camera parameters. 
         camera_params = self.cfg['pixelnerf']['camera_param_path']     
         self.camera_params = np.load(camera_params, allow_pickle=True).item()
@@ -123,6 +125,8 @@ class CLIPGraspingDataset(torch.utils.data.Dataset):
             self.cam_poses.append(pose.numpy())
 
         self.cam_poses = np.asarray(self.cam_poses)
+
+    def compute_pixelnerf_features(self, feature_dir, feat_type):
 
         # Get the objects we need features for. 
         snare_objs = list(get_snare_objs())
@@ -161,15 +165,13 @@ class CLIPGraspingDataset(torch.utils.data.Dataset):
                         exit()
             """
 
-            obj = 'f9c2bc7b4ef896e7146ff63b4c7525d9'
-
             # Load image. 
             imgs = torch.tensor(self.get_imgs(obj)).unsqueeze(0).cuda()
 
             # Encode image.
-            with torch.no_grad(): 
+            with torch.no_grad():
                 pixelnerf.encode(imgs, cam_poses, focal, c=c)
-                
+
                 # If just using first encoder, then we're done. 
                 if feat_type == 'pre-query':
                     feat = pixelnerf.encoder.latent
@@ -249,6 +251,8 @@ class CLIPGraspingDataset(torch.utils.data.Dataset):
 
             mlp_input = z_feature
 
+            pdb.set_trace()
+
             # Grab encoder's latent code.
             uv = -xyz[:, :, :2] / xyz[:, :, 2:]  # (SB, B, 2)
             uv *= repeat_interleave(
@@ -266,6 +270,8 @@ class CLIPGraspingDataset(torch.utils.data.Dataset):
                 -1, pixelnerf.latent_size
             )  # (SB * NS * B, latent)
 
+            pdb.set_trace()
+
             mlp_input = torch.cat((latent, z_feature), dim=-1)
 
             # Camera frustum culling stuff, currently disabled
@@ -274,18 +280,23 @@ class CLIPGraspingDataset(torch.utils.data.Dataset):
 
             # Run main NeRF network
             if coarse: 
-                mlp_output = pixelnerf.mlp_coarse(
+
+                mlp_output, feat = pixelnerf.mlp_coarse(
                     mlp_input,
                     combine_inner_dims=(num_views_per_obj, B),
                     combine_index=combine_index,
                     dim_size=dim_size,
+                    return_feat=True,
                 )
+
+                pdb.set_trace()
             else: 
-                mlp_output = pixelnerf.mlp_fine(
+                mlp_output, feat = pixelnerf.mlp_fine(
                     mlp_input,
                     combine_inner_dims=(num_views_per_obj, B),
                     combine_index=combine_index,
                     dim_size=dim_size,
+                    return_feat=True
                 )
 
             rgb = mlp_output[..., :3]
@@ -918,6 +929,11 @@ class CLIPGraspingDataset(torch.utils.data.Dataset):
             obj1_feats = obj1_feats[view_idxs1]
             obj2_feats = obj2_feats[view_idxs2]
 
+            # Get camera parameters for views. 
+            obj1_cam = self.cam_poses[view_idxs1]
+            obj2_cam = self.cam_poses[view_idxs2]
+
             feats['obj_feats'] = (obj1_feats, obj2_feats)
+            feats['obj_cams'] = (obj1_cam, obj2_cam)
 
         return feats

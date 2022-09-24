@@ -70,6 +70,7 @@ class PixelNeRFNet(torch.nn.Module):
 
         self.latent_size = self.encoder.latent_size
         self.mlp_coarse = make_mlp(conf["mlp_coarse"], d_in, d_latent, d_out=d_out)
+        
         self.mlp_fine = make_mlp(
             conf["mlp_fine"], d_in, d_latent, d_out=d_out, allow_empty=True
         )
@@ -244,6 +245,7 @@ class PixelNeRFNet(torch.nn.Module):
 
             # Run main NeRF network
             if coarse or self.mlp_fine is None:
+
                 mlp_output = self.mlp_coarse(
                     mlp_input,
                     combine_inner_dims=(self.num_views_per_obj, B),
