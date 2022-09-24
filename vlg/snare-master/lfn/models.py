@@ -72,6 +72,7 @@ class LightFieldModel(nn.Module):
         print(np.sum(np.prod(param.shape) for param in self.phi.parameters()))
 
     def get_light_field_function(self, z=None):
+
         if self.fit_single:
             phi = self.phi
         elif self.conditioning in ['hyper', 'low_rank']:

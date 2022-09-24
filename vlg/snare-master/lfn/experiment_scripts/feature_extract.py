@@ -61,9 +61,19 @@ class InstanceDataset():
     def __getitem__(self, idx):
         return self.instances[idx]
 
+def collate_fn(datapoints):
+    
+    result = {}
+
+    # Simply add another dimension to everything. 
+    for k in datapoints[0].keys(): 
+        result[k] = torch.stack([datapoint[k] for datapoint in datapoints]).cuda()
+
+    return result
+
 class SNSemDataset():
 
-    def __init__(self, path):
+    def __init__(self, path, view_idxs=[0,1,2,3,4,5,6,7]):
         self.path = path
 
         # List of all snare objects. 
@@ -90,6 +100,9 @@ class SNSemDataset():
                                             trgt_sidelength=64)
         self.intrinsics = torch.Tensor(intrinsics).float()
 
+        # Views to provide for each object as context. 
+        self.view_idxs = view_idxs
+
     def __len__(self):
         return len(self.objs)
 
@@ -99,7 +112,14 @@ class SNSemDataset():
         obj_idx = self.objs[idx]
         img_dir = os.path.join(self.path, obj_idx)
 
-        # Will contain return values. 
+        # Will be formed into datapoint. 
+        rgb = []
+        cam2world = []
+        uv = []
+        intrinsics = []
+        instance_idx = []
+
+        # Will contain views as individuals. 
         views = []
 
         # Dictionary of views for object. 
@@ -118,16 +138,35 @@ class SNSemDataset():
             alpha_composite_3 = alpha_composite.convert('RGB')
             img = np.asarray(alpha_composite_3).astype(np.float32) / 255.0
 
-            # Add view data to datapoint. 
-            view_dict['rgb'] = torch.from_numpy(img.reshape(-1, 3)).float()
-            view_dict['cam2world'] = self.poses[view]
-            view_dict['uv'] = self.uv
-            view_dict['intrinsics'] = self.intrinsics
-            view_dict['instance_idx'] = torch.Tensor([idx]).squeeze()
+            # For iterating over queries. 
+            view_dict = {
+                'rgb': torch.from_numpy(img.reshape(-1, 3)).float(),
+                'cam2world': self.poses[view],
+                'uv': self.uv,
+                'intrinsics': self.intrinsics,
+                'instance_idx': torch.Tensor([idx]).squeeze()
+            }
 
             views.append(view_dict)
-        
-        return InstanceDataset(views)
+
+            # Add view data to datapoint components (but only if we want it as context)
+            if view in self.view_idxs: 
+                rgb.append(view_dict['rgb'])
+                cam2world.append(view_dict['cam2world'])
+                uv.append(view_dict['uv'])
+                intrinsics.append(view_dict['intrinsics'])
+                instance_idx.append(view_dict['instance_idx'])
+            
+        # Combine into single datapoint. 
+        context = {
+            'rgb': torch.stack(rgb),
+            'cam2world': torch.stack(cam2world),
+            'uv': torch.stack(uv),
+            'intrinsics': torch.stack(intrinsics),
+            'instance_idx': torch.stack(instance_idx)
+        }
+
+        return (context, InstanceDataset(views))
 
 p = configargparse.ArgumentParser()
 p.add_argument('--data_root', type=str, required=True)
@@ -184,19 +223,18 @@ else:
 
 # Select random item from the dataset. 
 idx = np.random.randint(len(dataset))
-
 print(idx)
 
 # For optimizing parameters. 
 optim = torch.optim.Adam(model.latent_codes.parameters(), lr=1e-3)
 
 # Training query. 
-query = dataset[idx][4]
-model_input = util.assemble_model_input(query, query)
+context, queries = dataset[idx]
+model_input = {'query': collate_fn([context])}
 
 # Training loop. 
 for i in range(1000): 
-    
+
     # Forward pass through model. 
     model_output = model(model_input)
     pred = model_output['rgb']
@@ -210,9 +248,8 @@ for i in range(1000):
 
     print('Loss: {}'.format(loss))
 
-
 with torch.no_grad():
-    for j, query in enumerate(dataset[idx]):
+    for j, query in enumerate(queries):
 
         model_input = util.assemble_model_input(query, query)
         model_output = model(model_input)
