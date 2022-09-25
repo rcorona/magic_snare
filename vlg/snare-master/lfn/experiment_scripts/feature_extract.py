@@ -8,6 +8,7 @@ import pdb
 import torch.nn as nn
 import json
 from PIL import Image
+import pickle
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -22,6 +23,51 @@ import configargparse
 import config
 import util
 from pathlib import Path
+
+def trans_t(t):
+    return torch.tensor(
+        [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, t], [0, 0, 0, 1],], dtype=torch.float32,
+    )
+
+def rot_phi(phi):
+    return torch.tensor(
+        [
+            [1, 0, 0, 0],
+            [0, np.cos(phi), -np.sin(phi), 0],
+            [0, np.sin(phi), np.cos(phi), 0],
+            [0, 0, 0, 1],
+        ],
+        dtype=torch.float32,
+    )
+
+def rot_theta(th):
+    return torch.tensor(
+        [
+            [np.cos(th), 0, -np.sin(th), 0],
+            [0, 1, 0, 0],
+            [np.sin(th), 0, np.cos(th), 0],
+            [0, 0, 0, 1],
+        ],
+        dtype=torch.float32,
+    )
+
+def pose_spherical(theta, phi, radius):
+    """
+    Spherical rendering poses, from NeRF
+    """
+    c2w = trans_t(radius)
+    c2w = rot_phi(phi / 180.0 * np.pi) @ c2w
+    c2w = rot_theta(theta / 180.0 * np.pi) @ c2w
+    
+    c2w = (
+        torch.tensor(
+            [[-1, 0, 0, 0], [0, 0, 1, 0], [0, 1, 0, 0], [0, 0, 0, 1]],
+            dtype=torch.float32,
+        )
+        @ c2w
+    )
+
+    return c2w
 
 # Get all objects that exist in SNARE. 
 def get_snare_objs(split_sets=False): 
@@ -73,11 +119,15 @@ def collate_fn(datapoints):
 
 class SNSemDataset():
 
-    def __init__(self, path, view_idxs=[0,1,2,3,4,5,6,7]):
+    def __init__(self, path, view_idxs=[0,1,2,3,4,5,6,7], obj_file_path='objs.txt'):
         self.path = path
 
         # List of all snare objects. 
-        self.objs = list(get_snare_objs())
+        if not os.path.isfile(obj_file_path):
+            self.objs = list(get_snare_objs())
+            pickle.dump(self.objs, open(obj_file_path, 'wb'))
+        else: 
+            self.objs = pickle.load(open(obj_file_path, 'rb'))
 
         sidelen = 64
         org_sidelength = 64
@@ -216,13 +266,26 @@ if opt.dataset == 'NMR':
                                                       max_num_instances=opt.max_num_instances)
 
 elif opt.dataset == 'SNSem': 
-    dataset = SNSemDataset(opt.data_root)
+    dataset = SNSemDataset(opt.data_root, view_idxs=[0,1,2,3,4,5,6,7])
 else:
     raise
 
+# For 360 degree querying. 
+z_near = 1.2
+z_far = 4.0 
+radius = (z_near + z_far) * 0.5
+num_views = 40
+
+render_poses = torch.stack(
+    [
+        pose_spherical(angle, -30.0, radius)
+        for angle in np.linspace(-180, 180, num_views + 1)[:-1]
+    ],
+    0,
+)
 
 # Select random item from the dataset. 
-idx = np.random.randint(len(dataset))
+idx = 250#np.random.randint(len(dataset))
 print(idx)
 
 # For optimizing parameters. 
@@ -233,7 +296,7 @@ context, queries = dataset[idx]
 model_input = {'query': collate_fn([context])}
 
 # Training loop. 
-for i in range(1000): 
+for i in range(2000): 
 
     # Forward pass through model. 
     model_output = model(model_input)
@@ -248,21 +311,27 @@ for i in range(1000):
 
     print('Loss: {}'.format(loss))
 
+# Will only change pose. 
+query = queries[0]
+
 with torch.no_grad():
-    for j, query in enumerate(queries):
+    for j, pose in enumerate(render_poses):
+
+        # Overwrite query pose. 
+        query['cam2world'] = pose
 
         model_input = util.assemble_model_input(query, query)
         model_output = model(model_input)
 
         out_dict = {}
         out_dict['rgb'] = model_output['rgb']
-        out_dict['gt_rgb'] = model_input['query']['rgb']
+        #out_dict['gt_rgb'] = model_input['query']['rgb']
 
         # Ground truth and predicted images. 
-        gt_img = convert_image(out_dict['gt_rgb'], 'rgb')
+        #gt_img = convert_image(out_dict['gt_rgb'], 'rgb')
         img = convert_image(out_dict['rgb'], 'rgb')
 
         # Write to test folder. 
-        out_dir = 'test_imgs'
+        out_dir = 'test_vid'
         cv2.imwrite(os.path.join(out_dir, '{}.png'.format(j)), img)
-        cv2.imwrite(os.path.join(out_dir, '{}_gt.png'.format(j)), gt_img)
+        #cv2.imwrite(os.path.join(out_dir, '{}_gt.png'.format(j)), gt_img)
