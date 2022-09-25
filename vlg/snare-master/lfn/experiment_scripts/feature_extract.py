@@ -9,6 +9,7 @@ import torch.nn as nn
 import json
 from PIL import Image
 import pickle
+import imageio
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -288,33 +289,41 @@ render_poses = torch.stack(
 idx = 250#np.random.randint(len(dataset))
 print(idx)
 
-# For optimizing parameters. 
-optim = torch.optim.Adam(model.latent_codes.parameters(), lr=1e-3)
-
-# Training query. 
-context, queries = dataset[idx]
-model_input = {'query': collate_fn([context])}
-
 # Training loop. 
-for i in range(2000): 
+if dataset == 'SNSem':
 
-    # Forward pass through model. 
-    model_output = model(model_input)
-    pred = model_output['rgb']
-    gt = model_input['query']['rgb']
+    # For optimizing parameters. 
+    optim = torch.optim.Adam(model.latent_codes.parameters(), lr=1e-3)
 
-    # Loss computation. 
-    optim.zero_grad()
-    loss = nn.MSELoss()(gt, pred) * 200
-    loss.backward()
-    optim.step()
+    # Training query. 
+    context, queries = dataset[idx]
+    model_input = {'query': collate_fn([context])}
 
-    print('Loss: {}'.format(loss))
+    for i in range(10): 
 
-# Will only change pose. 
-query = queries[0]
+        # Forward pass through model. 
+        model_output = model(model_input)
+        pred = model_output['rgb']
+        gt = model_input['query']['rgb']
+
+        # Loss computation. 
+        optim.zero_grad()
+        loss = nn.MSELoss()(gt, pred) * 200
+        loss.backward()
+        optim.step()
+
+        print('Loss: {}'.format(loss))
+
+    # Will only change pose. 
+    query = queries[0]
+
+else: 
+    query = dataset[idx][0]
 
 with torch.no_grad():
+
+    frames = []
+
     for j, pose in enumerate(render_poses):
 
         # Overwrite query pose. 
@@ -330,8 +339,13 @@ with torch.no_grad():
         # Ground truth and predicted images. 
         #gt_img = convert_image(out_dict['gt_rgb'], 'rgb')
         img = convert_image(out_dict['rgb'], 'rgb')
+        frames.append(img)
 
         # Write to test folder. 
         out_dir = 'test_vid'
-        cv2.imwrite(os.path.join(out_dir, '{}.png'.format(j)), img)
+        #cv2.imwrite(os.path.join(out_dir, '{}.png'.format(j)), img)
         #cv2.imwrite(os.path.join(out_dir, '{}_gt.png'.format(j)), gt_img)
+    
+    video = np.stack(frames)
+    vid_path = os.path.join(out_dir, 'vid.mp4')
+    imageio.mimwrite(vid_path, video.astype(np.uint8), fps=40, quality=8)   
