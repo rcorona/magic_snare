@@ -10,6 +10,7 @@ import json
 from PIL import Image
 import pickle
 import imageio
+from torch.utils.data import DataLoader
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -52,7 +53,7 @@ def rot_theta(th):
         dtype=torch.float32,
     )
 
-def pose_spherical(theta, phi, radius):
+def pose_spherical(theta, phi, radius, xyz):
     """
     Spherical rendering poses, from NeRF
     """
@@ -60,15 +61,46 @@ def pose_spherical(theta, phi, radius):
     c2w = rot_phi(phi / 180.0 * np.pi) @ c2w
     c2w = rot_theta(theta / 180.0 * np.pi) @ c2w
     
+    x, y, z = xyz
+
+    #xyz -- Upside down but correct. 
+    #xzy -- Sideways.  
+    #yzx -- nose pointed up or down. 
+    #yxz -- also pointed up or down
+    #zxy -- 
+    #zyx -- 
+
     c2w = (
         torch.tensor(
-            [[-1, 0, 0, 0], [0, 0, 1, 0], [0, 1, 0, 0], [0, 0, 0, 1]],
+            [[x, 0, 0, 0], [0, y, 0, 0], [0, 0, z, 0], [0, 0, 0, 1]],
             dtype=torch.float32,
         )
         @ c2w
     )
 
     return c2w
+
+def permute_poses():
+
+    # Will contain all permutations. 
+    pose_list = []
+
+    for x in (-1, 1):
+        for y in (-1, 1):
+            for z in (-1, 1):
+
+                render_poses = torch.stack(
+                    [
+                        pose_spherical(angle, 30.0, radius, (x,y,z))
+                        for angle in np.linspace(-180, 180, num_views + 1)[:-1]
+                    ],
+                    0,
+                )
+
+                pose_list.append((render_poses, (x,y,z)))
+
+    return pose_list
+
 
 # Get all objects that exist in SNARE. 
 def get_snare_objs(split_sets=False): 
@@ -241,8 +273,10 @@ print("Loading model")
 model.load_state_dict(state_dict)
 
 # Overwrite latent codes. 
-model.latent_codes = nn.Embedding(model.num_instances, model.latent_dim)
-nn.init.normal_(model.latent_codes.weight, mean=0, std=0.01)
+if opt.dataset == 'SNSem':
+    model.latent_codes = nn.Embedding(model.num_instances, model.latent_dim)
+    nn.init.normal_(model.latent_codes.weight, mean=0, std=0.01)
+
 model = model.cuda()
 
 def convert_image(img, type):
@@ -276,21 +310,22 @@ z_near = 1.2
 z_far = 4.0 
 radius = (z_near + z_far) * 0.5
 num_views = 40
+x,y,z = (1, 1, 1)
 
 render_poses = torch.stack(
     [
-        pose_spherical(angle, -30.0, radius)
+        pose_spherical(angle, 30.0, radius, (x,y,z))
         for angle in np.linspace(-180, 180, num_views + 1)[:-1]
     ],
     0,
 )
 
 # Select random item from the dataset. 
-idx = 250#np.random.randint(len(dataset))
+idx = 3721#np.random.randint(len(dataset))
 print(idx)
 
 # Training loop. 
-if dataset == 'SNSem':
+if opt.dataset == 'SNSem':
 
     # For optimizing parameters. 
     optim = torch.optim.Adam(model.latent_codes.parameters(), lr=1e-3)
@@ -299,7 +334,7 @@ if dataset == 'SNSem':
     context, queries = dataset[idx]
     model_input = {'query': collate_fn([context])}
 
-    for i in range(10): 
+    for i in range(3000): 
 
         # Forward pass through model. 
         model_output = model(model_input)
@@ -320,9 +355,23 @@ if dataset == 'SNSem':
 else: 
     query = dataset[idx][0]
 
-with torch.no_grad():
+# Assemble ground truth video. 
+out_dir = 'test_vid'
+gt_frames = []
 
+for query in queries: 
+    model_input = util.assemble_model_input(query, query)
+    gt_img = convert_image(model_input['query']['rgb'], 'rgb')
+    gt_frames.append(gt_img)
+
+gt_video = np.stack(gt_frames)
+vid_path = os.path.join(out_dir, 'vid_gt.mp4')
+imageio.mimwrite(vid_path, gt_video.astype(np.uint8), fps=4, quality=8) 
+
+with torch.no_grad():
+        
     frames = []
+    frames_gt = []
 
     for j, pose in enumerate(render_poses):
 
@@ -338,14 +387,15 @@ with torch.no_grad():
 
         # Ground truth and predicted images. 
         #gt_img = convert_image(out_dict['gt_rgb'], 'rgb')
+        #frames_gt.append(gt_img)
+
         img = convert_image(out_dict['rgb'], 'rgb')
         frames.append(img)
 
         # Write to test folder. 
-        out_dir = 'test_vid'
         #cv2.imwrite(os.path.join(out_dir, '{}.png'.format(j)), img)
         #cv2.imwrite(os.path.join(out_dir, '{}_gt.png'.format(j)), gt_img)
     
     video = np.stack(frames)
-    vid_path = os.path.join(out_dir, 'vid.mp4')
-    imageio.mimwrite(vid_path, video.astype(np.uint8), fps=40, quality=8)   
+    vid_path = os.path.join(out_dir, 'vid.mp4'.format(x,y,z))
+    imageio.mimwrite(vid_path, video.astype(np.uint8), fps=20, quality=8)     
