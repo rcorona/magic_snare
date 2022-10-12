@@ -3,6 +3,7 @@ from models.zero_shot_cls import ZeroShotClassifier
 from models.rotator import Rotator
 from models.transformer import TransformerClassifier
 from models.pixelnerf import PixelNeRFClassifier
+from models.lfn import LFNClassifier
 
 names = {
     # classifiers
@@ -16,5 +17,7 @@ names = {
     'transformer': TransformerClassifier,
 
     # PixelNeRF
-    'pixelnerf': PixelNeRFClassifier
+    'pixelnerf': PixelNeRFClassifier,
+
+    'lfn': LFNClassifier
 }

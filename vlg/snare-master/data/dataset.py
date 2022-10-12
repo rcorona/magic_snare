@@ -871,7 +871,8 @@ class CLIPGraspingDataset(torch.utils.data.Dataset):
 
         # Tokenize annotation if using a transformer.
         use_lang_toks = self.cfg['train']['model'] == 'transformer' or \
-                self.cfg['train']['model'] == 'pixelnerf'
+                self.cfg['train']['model'] == 'pixelnerf' or \
+                self.cfg['train']['model'] == 'lfn'
 
         if use_lang_toks:
             feats['lang_tokens'] = clip.tokenize(feats['annotation'])
@@ -935,5 +936,16 @@ class CLIPGraspingDataset(torch.utils.data.Dataset):
 
             feats['obj_feats'] = (obj1_feats, obj2_feats)
             feats['obj_cams'] = (obj1_cam, obj2_cam)
+
+        elif self.cfg['train']['model'] == 'lfn':
+            
+            # Load pre-extracted LFN features. 
+            feat1_path = os.path.join(self.cfg['lfn']['feature_dir'], '{}.npy'.format(key1))
+            feat2_path = os.path.join(self.cfg['lfn']['feature_dir'], '{}.npy'.format(key2))
+
+            obj1_feats = np.expand_dims(np.load(feat1_path), axis=0)
+            obj2_feats = np.expand_dims(np.load(feat2_path), axis=0)
+
+            feats['obj_feats'] = (obj1_feats, obj2_feats)
 
         return feats

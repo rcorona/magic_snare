@@ -11,6 +11,7 @@ from PIL import Image
 import pickle
 import imageio
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -144,11 +145,24 @@ def collate_fn(datapoints):
     
     result = {}
 
-    # Simply add another dimension to everything. 
-    for k in datapoints[0].keys(): 
-        result[k] = torch.stack([datapoint[k] for datapoint in datapoints]).cuda()
+    # Unpack into its two parts. 
+    contexts = [d[0] for d in datapoints]
+    queries = [d[1] for d in datapoints]
 
-    return result
+    # Simply add another dimension to everything. 
+    for k in contexts[0].keys(): 
+        
+        if type(contexts[0][k]) == torch.Tensor: 
+            result[k] = torch.stack([context[k] for context in contexts])
+        elif type(contexts[0][k]) == str: 
+            result[k] = [context[k] for context in contexts]
+
+
+    # Replace instance IDX with one just for feature extraction. 
+    bz = len(datapoints)
+    result['instance_idx'] = torch.arange(bz).unsqueeze(1).expand_as(result['instance_idx'])
+
+    return result, queries
 
 class SNSemDataset():
 
@@ -186,13 +200,29 @@ class SNSemDataset():
         # Views to provide for each object as context. 
         self.view_idxs = view_idxs
 
+        self.out_dir = '/home/rcorona/2022/lang_nerf/vlg/snare-master/data/lfn_feats/'
+
     def __len__(self):
         return len(self.objs)
 
     def __getitem__(self, idx): 
 
+        # Hack to get all objects using multiple GPUs. TODO FIX/REMOVE!!!
+        while True: 
+            path = os.path.join(self.out_dir, '{}.npy'.format(self.objs[0]))
+            
+            if os.path.isfile(path):
+                self.objs = self.objs[1:]
+            else: 
+                obj_idx = self.objs[0]
+
+                # Touch file to claim for this process. 
+                from pathlib import Path 
+                Path(path).touch()
+                break 
+
         # Object id. 
-        obj_idx = self.objs[idx]
+        #obj_idx = self.objs[idx] TODO Bring back!!! 
         img_dir = os.path.join(self.path, obj_idx)
 
         # Will be formed into datapoint. 
@@ -227,7 +257,7 @@ class SNSemDataset():
                 'cam2world': self.poses[view],
                 'uv': self.uv,
                 'intrinsics': self.intrinsics,
-                'instance_idx': torch.Tensor([idx]).squeeze()
+                'instance_idx': torch.Tensor([1]).squeeze()
             }
 
             views.append(view_dict)
@@ -246,7 +276,8 @@ class SNSemDataset():
             'cam2world': torch.stack(cam2world),
             'uv': torch.stack(uv),
             'intrinsics': torch.stack(intrinsics),
-            'instance_idx': torch.stack(instance_idx)
+            'instance_idx': torch.stack(instance_idx),
+            'obj_idx': obj_idx
         }
 
         return (context, InstanceDataset(views))
@@ -264,6 +295,7 @@ p.add_argument('--viewlist', type=str, default=None, required=False)
 opt = p.parse_args()
 
 state_dict = torch.load(opt.checkpoint_path)
+pdb.set_trace()
 num_instances = state_dict['latent_codes.weight'].shape[0]
 
 model = models.LFAutoDecoder(num_instances=num_instances, latent_dim=256, parameterization='plucker', network=opt.network,
@@ -271,11 +303,6 @@ model = models.LFAutoDecoder(num_instances=num_instances, latent_dim=256, parame
 model.eval()
 print("Loading model")
 model.load_state_dict(state_dict)
-
-# Overwrite latent codes. 
-if opt.dataset == 'SNSem':
-    model.latent_codes = nn.Embedding(model.num_instances, model.latent_dim)
-    nn.init.normal_(model.latent_codes.weight, mean=0, std=0.01)
 
 model = model.cuda()
 
@@ -322,32 +349,60 @@ render_poses = torch.stack(
 
 # Select random item from the dataset. 
 idx = 3721#np.random.randint(len(dataset))
-print(idx)
+out_dir = '/home/rcorona/2022/lang_nerf/vlg/snare-master/data/lfn_feats/'
 
 # Training loop. 
 if opt.dataset == 'SNSem':
 
+    dataloader = DataLoader(dataset, batch_size=5, num_workers=0, collate_fn=collate_fn, shuffle=True) 
+
     # For optimizing parameters. 
     optim = torch.optim.Adam(model.latent_codes.parameters(), lr=1e-3)
 
-    # Training query. 
-    context, queries = dataset[idx]
-    model_input = {'query': collate_fn([context])}
+    # Iterate over batches of objects from the dataset. 
+    for context, queries in tqdm(dataloader): 
 
-    for i in range(3000): 
+        # Re-initialize embeddings for batch. 
+        bz = len(context['obj_idx'])
+        model.latent_codes = nn.Embedding(bz, model.latent_dim)
+        nn.init.normal_(model.latent_codes.weight, mean=0, std=0.01)
+        model.latent_codes = model.latent_codes.cuda()
 
-        # Forward pass through model. 
-        model_output = model(model_input)
-        pred = model_output['rgb']
-        gt = model_input['query']['rgb']
+        # Put in GPU. 
+        for k in context.keys(): 
+            if type(context[k]) == torch.Tensor: 
+                context[k] = context[k].cuda()
 
-        # Loss computation. 
-        optim.zero_grad()
-        loss = nn.MSELoss()(gt, pred) * 200
-        loss.backward()
-        optim.step()
+        #context, queries = dataset[idx]
+        model_input = {'query': context}
 
-        print('Loss: {}'.format(loss))
+        for i in tqdm(range(3000)): 
+
+            # Forward pass through model. 
+            model_output = model(model_input)
+            pred = model_output['rgb']
+            gt = model_input['query']['rgb']
+
+            # Loss computation. 
+            optim.zero_grad()
+            loss = nn.MSELoss()(gt, pred) * 200
+            loss.backward()
+            optim.step()
+
+        # Save extracted latent features to disk. 
+        embeddings = model.latent_codes.weight.data.cpu().numpy()
+
+        for idx in range(bz):
+            
+            # Get object name and embedding. 
+            obj_idx = context['obj_idx'][idx]
+            embedding = embeddings[idx]
+
+            # Store in disk. 
+            feat_path = os.path.join(out_dir, '{}.npy'.format(obj_idx))
+            np.save(feat_path, embedding)
+
+    sys.exit() # TODO Remove. 
 
     # Will only change pose. 
     query = queries[0]

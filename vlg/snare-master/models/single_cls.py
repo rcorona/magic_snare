@@ -2,6 +2,7 @@ import numpy as np
 import json
 import os
 from pathlib import Path
+import shutil
 
 import torch
 import torch.nn as nn
@@ -47,6 +48,10 @@ class SingleClassifier(LightningModule):
         # results save path
         self.save_path = Path(os.getcwd())
 
+        if os.path.exists(self.cfg['train']['training_dynamics_dir']):
+            shutil.rmtree(self.cfg['train']['training_dynamics_dir'])
+        os.makedirs(self.cfg['train']['training_dynamics_dir'])
+
         # log with wandb
         self.log_data = self.cfg['train']['log']
         if self.log_data:
@@ -82,7 +87,21 @@ class SingleClassifier(LightningModule):
 
     def configure_optimizers(self):
         self.optimizer = torch.optim.Adam(self.parameters(), lr=self.cfg['train']['lr'])
-        return self.optimizer
+
+        # Linear scheduler. 
+        def linear_warmup(step): 
+            return min(step / self.cfg['transformer']['warmup_steps'], 1.0)
+
+        scheduler = torch.optim.lr_scheduler.LambdaLR(self.optimizer, linear_warmup)
+        scheduler_cfg = {
+                'scheduler': scheduler, 
+                'interval': 'step', 
+                'frequency': 1
+        }
+
+        # return self.optimizer
+        return ([self.optimizer], [scheduler_cfg])
+
 
     def smoothed_cross_entropy(self, pred, target, alpha=0.1):
         # From ShapeGlot (Achlioptas et. al)
@@ -120,8 +139,8 @@ class SingleClassifier(LightningModule):
         lang_feats = lang_feats.to(device=self.device).float()
 
         # aggregate
-        img1_feats = self.aggregator(img1_n_feats)
-        img2_feats = self.aggregator(img2_n_feats)
+        img1_feats = self.aggregator(img1_n_feats.squeeze()) # this is necessary for my single-to-multi. might not work generally
+        img2_feats = self.aggregator(img2_n_feats.squeeze())
 
         # lang encoding
         lang_enc = self.lang_fc(lang_feats)
@@ -171,6 +190,25 @@ class SingleClassifier(LightningModule):
     def training_step(self, batch, batch_idx):
         out = self.forward(batch)
 
+        obj_key_0 = batch['keys'][0]
+        obj_key_1 = batch['keys'][1]
+        annotations = batch['annotation']
+
+        probs = out['probs']
+        labels = out['labels']
+        visual = out['is_visual']
+        num_steps = out['num_steps']
+
+        probs = F.softmax(probs, dim=-1)
+
+        for i in range(len(batch)):
+            # save each one as a dict in a json
+            item = {'annotation':annotations[i], 'obj_0':obj_key_0[i], 'obj_1':obj_key_1[i], 'probs':probs[i].cpu().detach().numpy(), 'labels':labels[i].cpu().detach().numpy(), 'is_visual':visual[i].cpu().detach().numpy()}
+            
+
+            with open(os.path.join(self.cfg['train']['training_dynamics_dir'], 'epoch_'+str(self.current_epoch)+'.jsonl'), 'a+') as f:
+                f.write(str(item))
+                f.write('\n')
         # classifier loss
         losses = self._criterion(out)
 
