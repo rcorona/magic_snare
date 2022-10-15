@@ -201,7 +201,7 @@ class SingleClassifier(LightningModule):
 
         probs = F.softmax(probs, dim=-1)
 
-        for i in range(len(batch)):
+        for i in range(len(annotations)):
             # save each one as a dict in a json
             item = {'annotation':annotations[i], 'obj_0':obj_key_0[i], 'obj_1':obj_key_1[i], 'probs':probs[i].cpu().detach().numpy(), 'labels':labels[i].cpu().detach().numpy(), 'is_visual':visual[i].cpu().detach().numpy()}
             
