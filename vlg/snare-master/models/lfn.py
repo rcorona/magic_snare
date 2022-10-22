@@ -609,8 +609,6 @@ class LFNClassifier(LightningModule):
     def training_epoch_end(self, output): 
         self.epoch_num += 1
 
-        pdb.set_trace()
-
     def on_validation_start(self): 
         self.val_step_num = 0
 
