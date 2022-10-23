@@ -42,11 +42,16 @@ data:
 
   clip_lang_feats: '${root_dir}/data/langfeat-512-clipViT32.json'
   clip_img_feats: '${root_dir}/data/shapenet-clipViT32-frames.json'
+  clip_img_feat_dir: '${root_dir}/data/shapenet-clipViT32-frames/'
   
   legoformer_feats-8: '${root_dir}/data/8-view_embeddings.json' 
   legoformer_feats-1: '${root_dir}/data/1-view_embeddings.json'
   
   shapenet_voxel_dir: '${root_dir}/data/models-binvox-solid'
+
+  custom_renders: True
+  custom_render_path: '${root_dir}/data/nmr_snare_render/shapenet_images_64_2.7/'
+  blind_only: True
 
   n_views: 8
 
@@ -106,6 +111,8 @@ train:
   weight_decay: 0.01
   loss_lambda: 0.5
   task: 'snare'
+  shuffle: True
+
 
   aggregator:
     type: 'maxpool'

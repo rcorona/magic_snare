@@ -657,6 +657,10 @@ class CLIPGraspingDataset(torch.utils.data.Dataset):
             with open(fname_rel, 'r') as f:
                 self.data = self.data + json.load(f)
 
+        # Filter out visual examples if desired. 
+        if not self.mode == 'test' and self.cfg['data']['blind_only']:
+            self.data = [d for d in self.data if not d['visual']]
+
         print(f"Loaded Entries. {self.mode}: {len(self.data)} entries")
 
     def unpack_clip_img_feats(self):
