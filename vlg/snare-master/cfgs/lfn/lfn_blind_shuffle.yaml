@@ -51,7 +51,7 @@ data:
   custom_renders: True
   custom_render_path: '${root_dir}/data/nmr_snare_render/shapenet_images_64_2.7/'
 
-  blind_only: False
+  blind_only: True
 
 lfn: 
   feature_dir: '${root_dir}/data/lfn_feats'
@@ -96,7 +96,7 @@ train:
   task: 'snare'
   zero_feature: False
   training_dynamics_dir: '${root_dir}/training_dynamics/lfn'
-  shuffle: False
+  shuffle: True
 
   aggregator:
     type: 'maxpool'

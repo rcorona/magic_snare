@@ -96,7 +96,7 @@ train:
   task: 'snare'
   zero_feature: False
   training_dynamics_dir: '${root_dir}/training_dynamics/lfn'
-  shuffle: False
+  shuffle: True
 
   aggregator:
     type: 'maxpool'
