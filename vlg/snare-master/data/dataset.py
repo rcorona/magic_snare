@@ -156,7 +156,6 @@ class CLIPGraspingDataset(torch.utils.data.Dataset):
             with open('/home/rcorona/data/NMR_Dataset/03001627/test.lst', 'r') as f: 
                 lines = [l.strip() for l in f]
 
-                pdb.set_trace()
 
                 for i in range(len(lines)):
                     if lines[i] in snare_objs: 
@@ -251,7 +250,6 @@ class CLIPGraspingDataset(torch.utils.data.Dataset):
 
             mlp_input = z_feature
 
-            pdb.set_trace()
 
             # Grab encoder's latent code.
             uv = -xyz[:, :, :2] / xyz[:, :, 2:]  # (SB, B, 2)
@@ -270,7 +268,6 @@ class CLIPGraspingDataset(torch.utils.data.Dataset):
                 -1, pixelnerf.latent_size
             )  # (SB * NS * B, latent)
 
-            pdb.set_trace()
 
             mlp_input = torch.cat((latent, z_feature), dim=-1)
 
@@ -289,7 +286,6 @@ class CLIPGraspingDataset(torch.utils.data.Dataset):
                     return_feat=True,
                 )
 
-                pdb.set_trace()
             else: 
                 mlp_output, feat = pixelnerf.mlp_fine(
                     mlp_input,
