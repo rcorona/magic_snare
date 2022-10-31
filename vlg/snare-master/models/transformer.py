@@ -51,6 +51,13 @@ class TransformerClassifier(LightningModule):
         self.cfg = cfg
         self.dropout = self.cfg['train']['dropout']
 
+        # Keep track of predictions for visualizations later. 
+        self.val_predictions = {
+            'probs': [],
+            'labels': [],
+            'visual': []
+        }
+
         # Determines the modalities used by the model. 
         self.feats_backbone = self.cfg['train']['feats_backbone']
 
@@ -123,24 +130,21 @@ class TransformerClassifier(LightningModule):
             
     def build_model(self):
         
-        # Determine if single or multiview legoformer. 
-        if self.cfg['data']['n_views'] == 1:
-            legoformer_class = LegoFormerS
-            ckpt_path = self.cfg['legoformer_paths']['legoformer_s']
-            cfg_path = os.path.join(self.cfg['legoformer_paths']['cfg'], 'legoformer_s.yaml')
-        else:
-            legoformer_class = LegoFormerM
-            ckpt_path = self.cfg['legoformer_paths']['legoformer_m']
-            cfg_path = os.path.join(self.cfg['legoformer_paths']['cfg'], 'legoformer_m.yaml')
+        # Use legoformer to fine-tune if not freezing. 
+        if not self.frozen_legoformer:
+            # Determine if single or multiview legoformer. 
+            if self.cfg['data']['n_views'] == 1:
+                legoformer_class = LegoFormerS
+                ckpt_path = self.cfg['legoformer_paths']['legoformer_s']
+                cfg_path = os.path.join(self.cfg['legoformer_paths']['cfg'], 'legoformer_s.yaml')
+            else:
+                legoformer_class = LegoFormerM
+                ckpt_path = self.cfg['legoformer_paths']['legoformer_m']
+                cfg_path = os.path.join(self.cfg['legoformer_paths']['cfg'], 'legoformer_m.yaml')
 
-        # Load pre-trained legoformer. 
-        cfg = load_config(cfg_path)
-        self.legoformer = legoformer_class.load_from_checkpoint(ckpt_path, config=cfg)
-
-        # Freeze if desired. 
-        if self.frozen_legoformer: 
-            for p in self.legoformer.parameters(): 
-                p.requires_grad = False
+            # Load pre-trained legoformer. 
+            cfg = load_config(cfg_path)
+            self.legoformer = legoformer_class.load_from_checkpoint(ckpt_path, config=cfg)
 
         # CLIP-based langauge model. Frozen. # TODO Do we want to add option to fine-tune?  
         self.clip, _ = clip.load('ViT-B/32', device='cuda')
@@ -346,24 +350,35 @@ class TransformerClassifier(LightningModule):
         # Generate object features using legoformer.  
         # Right now we assume we've precomputed the VGG16 features and don't use raw images. 
         if self.cfg['train']['feats_backbone'] == 'legoformer':
-            vgg16_feats1, vgg16_feats2 = vgg16_feats
-            vgg16_feats1, vgg16_feats2 = vgg16_feats1.cuda(), vgg16_feats2.cuda()
-
-            # Potentially skip legoformer all together and use VGG16 features directly. 
-            if not self.cfg['transformer']['skip_legoformer']:
-                # Also optionally get reconstruction output.
-                reconstruction = self.cfg['data']['voxel_reconstruction']
-                xyz_feats = self.cfg['transformer']['xyz_embeddings']
-                obj1_n_feats, obj1_reconstruction = self.legoformer.get_obj_features(vgg16_feats1, xyz_feats, reconstruction)
-                obj2_n_feats, obj2_reconstruction = self.legoformer.get_obj_features(vgg16_feats2, xyz_feats, reconstruction)
+            
+            # If frozen legoformer, then just use pre-extracted features. 
+            if self.frozen_legoformer: 
+                obj1_n_feats, obj2_n_feats = obj_feats
+                obj1_n_feats = obj1_n_feats.cuda()
+                obj2_n_feats = obj2_n_feats.cuda()
+                
+                obj1_reconstruction, obj2_reconstruction = None, None
+                
+            # Otherwise extract them. 
             else: 
-                obj1_n_feats, obj1_reconstruction = vgg16_feats1.squeeze(), None
-                obj2_n_feats, obj2_reconstruction = vgg16_feats2.squeeze(), None
+                vgg16_feats1, vgg16_feats2 = vgg16_feats
+                vgg16_feats1, vgg16_feats2 = vgg16_feats1.cuda(), vgg16_feats2.cuda()
 
-                # Correct for single-view. 
-                if len(obj1_n_feats.shape) == 2:
-                    obj1_n_feats = obj1_n_feats.unsqueeze(1)
-                    obj2_n_feats = obj2_n_feats.unsqueeze(1)
+                # Potentially skip legoformer all together and use VGG16 features directly. 
+                if not self.cfg['transformer']['skip_legoformer']:
+                    # Also optionally get reconstruction output.
+                    reconstruction = self.cfg['data']['voxel_reconstruction']
+                    xyz_feats = self.cfg['transformer']['xyz_embeddings']
+                    obj1_n_feats, obj1_reconstruction = self.legoformer.get_obj_features(vgg16_feats1, xyz_feats, reconstruction)
+                    obj2_n_feats, obj2_reconstruction = self.legoformer.get_obj_features(vgg16_feats2, xyz_feats, reconstruction)
+                else: 
+                    obj1_n_feats, obj1_reconstruction = vgg16_feats1.squeeze(), None
+                    obj2_n_feats, obj2_reconstruction = vgg16_feats2.squeeze(), None
+
+                    # Correct for single-view. 
+                    if len(obj1_n_feats.shape) == 2:
+                        obj1_n_feats = obj1_n_feats.unsqueeze(1)
+                        obj2_n_feats = obj2_n_feats.unsqueeze(1)
 
         elif self.cfg['train']['feats_backbone'] == 'pix2vox' or self.cfg['train']['feats_backbone'] == '3d-r2n2': 
             # Pre-extracted features
@@ -822,6 +837,11 @@ class TransformerClassifier(LightningModule):
         visual = out['is_visual']
         num_steps = out['num_steps']
 
+        # Keep track of predictions. 
+        self.val_predictions['labels'].append(labels.cpu().numpy())
+        self.val_predictions['probs'].append(probs.cpu().numpy())
+        self.val_predictions['visual'].append(visual.long().cpu().numpy())
+
         probs = F.softmax(probs, dim=-1)
         metrics = self.compute_metrics(labels, losses, probs, visual, num_steps, out)
         
@@ -925,6 +945,11 @@ class TransformerClassifier(LightningModule):
     def validation_epoch_end(self, all_outputs, mode='vl'):
         sanity_check = True
 
+        # Consolidate all predictions. 
+        self.val_predictions['probs'] = np.concatenate(self.val_predictions['probs'], axis=0)
+        self.val_predictions['labels'] = np.concatenate(self.val_predictions['labels'], axis=0)
+        self.val_predictions['visual'] = np.concatenate(self.val_predictions['visual'], axis=0)
+
         res = {
             'val_loss': 0.0,
 
@@ -993,6 +1018,15 @@ class TransformerClassifier(LightningModule):
                 if res[f'{mode}/acc'] > self.best_val_acc:
                     self.best_val_acc = res[f'{mode}/acc']
                     self.best_val_res = dict(res)
+                    
+                    # Store predictions. 
+                    preds_path = os.path.join(self.save_path, 'val_preds.npz')
+                    np.savez(
+                        preds_path, 
+                        probs=self.val_predictions['probs'],
+                        labels=self.val_predictions['labels'],
+                        visual=self.val_predictions['visual']
+                    )
 
             # results to save
             results_dict = self.best_test_res if mode == 'test' else self.best_val_res
@@ -1016,6 +1050,13 @@ class TransformerClassifier(LightningModule):
 
         # Add results to log dictionary. 
         pass#wandb.log(res, self.step_num)
+
+        # Re-initialize val predictions buffer. 
+        self.val_predictions = {
+            'probs': [],
+            'labels': [],
+            'visual': []
+        }
 
         return dict(
             val_loss=res[f'{mode}/loss'],

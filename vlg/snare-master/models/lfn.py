@@ -378,6 +378,7 @@ class LFNClassifier(LightningModule):
 
         probs = F.softmax(probs, dim=-1)
 
+        """
         for i in range(len(annotations)):
             # save each one as a dict in a json
             item = {
@@ -392,6 +393,7 @@ class LFNClassifier(LightningModule):
             with open(os.path.join(self.cfg['train']['training_dynamics_dir'], 'epoch_'+str(self.current_epoch)+'.jsonl'), 'a+') as f:
                 f.write(str(item))
                 f.write('\n')
+        """
 
         # classifier loss
         losses = self._criterion(out)
@@ -560,8 +562,15 @@ class LFNClassifier(LightningModule):
 
         val_acc = float(val_correct) / val_total
         
-        val_visual_acc = float(visual_correct) / visual_total
-        val_nonvis_acc = float(nonvis_correct) / nonvis_total
+        if visual_total > 0: 
+            val_visual_acc = float(visual_correct) / visual_total
+        else: 
+            val_visual_acc = 0.0
+            
+        if nonvis_total > 0: 
+            val_nonvis_acc = float(nonvis_correct) / nonvis_total
+        else: 
+            val_nonvis_acc = 0.0
 
         return_dict = dict(
             val_acc=val_acc,
@@ -650,8 +659,16 @@ class LFNClassifier(LightningModule):
 
         res['val_loss'] = float(res['val_loss']) / len(all_outputs)
         res['val_acc'] = float(res['val_correct']) / res['val_total']
-        res['val_visual_acc'] = float(res['val_visual_correct']) / res['val_visual_total']
-        res['val_nonvis_acc'] = float(res['val_nonvis_correct']) / res['val_nonvis_total']
+        
+        if res['val_visual_total'] > 0: 
+            res['val_visual_acc'] = float(res['val_visual_correct']) / res['val_visual_total']
+        else: 
+            res['val_visual_acc'] = 0.0
+            
+        if res['val_nonvis_total'] > 0:
+            res['val_nonvis_acc'] = float(res['val_nonvis_correct']) / res['val_nonvis_total']
+        else: 
+            res['val_nonvis_acc'] = 0.0
 
         # Compute IoU metric. # TODO correct for masking out invalid voxelmaps. (333/7881 in dataset).  
         res['val_iou'] = float(res['val_iou']) / (res['val_total'] * 2) # Have two objects per example.

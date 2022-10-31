@@ -786,6 +786,14 @@ class CLIPGraspingDataset(torch.utils.data.Dataset):
 
         return imgs
 
+    def get_legoformer_feats(self, key):
+        
+        # Object image path. 
+        feat_dir = self.cfg['data']['legoformer_multiview_feats']
+        feat_path = os.path.join(feat_dir, '{}.npy'.format(key))
+        
+        return np.load(feat_path)
+
     def get_vgg16_feats(self, key): 
 
         # Object images path. 
@@ -887,14 +895,24 @@ class CLIPGraspingDataset(torch.utils.data.Dataset):
 
         # Return VGG16 features if needed.
         if self.feats_backbone == 'legoformer': 
-            vgg16_feats1 = self.get_vgg16_feats(key1)
-            vgg16_feats2 = self.get_vgg16_feats(key2)
+            
+            # Use pre-extracted features if not fine-tuning. 
+            if self.cfg['transformer']['freeze_legoformer']:
+                 obj1_feats = self.get_legoformer_feats(key1)
+                 obj2_feats = self.get_legoformer_feats(key2)
+                 
+                 feats['obj_feats'] = (obj1_feats, obj2_feats)
+                 
+            # If fine-tuning LegoFormer use VGG16 feats.
+            else:             
+                vgg16_feats1 = self.get_vgg16_feats(key1)
+                vgg16_feats2 = self.get_vgg16_feats(key2)
 
-            # Filter out views. 
-            vgg16_feats1 = vgg16_feats1[view_idxs1]
-            vgg16_feats2 = vgg16_feats2[view_idxs2]
+                # Filter out views. 
+                vgg16_feats1 = vgg16_feats1[view_idxs1]
+                vgg16_feats2 = vgg16_feats2[view_idxs2]
 
-            feats['vgg16_feats'] = (vgg16_feats1, vgg16_feats2)
+                feats['vgg16_feats'] = (vgg16_feats1, vgg16_feats2)
 
         # Load ground truth voxel maps if needed. 
         if self.cfg['data']['voxel_reconstruction']:

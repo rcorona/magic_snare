@@ -81,7 +81,7 @@ train:
   log: True
   lr: 0.001
   batch_size: 320
-  max_epochs: 50
+  max_epochs: 75
   load_from_last_ckpt: False
   dropout: 0.1
   normalize_feats: True

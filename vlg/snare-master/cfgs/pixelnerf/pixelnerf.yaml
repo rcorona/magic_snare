@@ -51,6 +51,8 @@ data:
   custom_renders: True
   custom_render_path: '${root_dir}/data/nmr_snare_render/shapenet_images_64_2.7/'
 
+  blind_only: False
+
 pixelnerf: 
   pn_cfg: '${root_dir}/pixelnerf/conf/exp/sn64.conf'
   pn_checkpoint: '${root_dir}/pixelnerf/checkpoints/sn64/pixel_nerf_latest'
@@ -100,6 +102,7 @@ train:
   loss_lambda: 0.5
   task: 'snare'
   zero_feature: False
+  shuffle: False
 
   aggregator:
     type: 'maxpool'

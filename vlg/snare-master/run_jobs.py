@@ -3,6 +3,8 @@ import argparse
 import pdb
 import os
 import subprocess
+import json
+import numpy as np
 
 def permute_combos(list1, list2, l1_prefix='', l2_prefix=''):
     """
@@ -39,6 +41,7 @@ def run_job(command_args):
 
     # Call command with redirected output to not confuse command line. 
     out_path = os.path.join(args.worker_out_dir, '{}_out.txt'.format(pid))
+    print('Running: {}'.format(command))
     subprocess.run(command.split(), stdout=open(out_path, 'w'))
 
 def run_jobs(commands, gpus):
@@ -73,17 +76,58 @@ def gen_multiseed_commands(args):
     commands = []
 
     # Get all experiment configs and names. 
-    configs = args.config_names.split(',')
-    exp_names = args.exp_names.split(',')
+    configs = args.config_names
+    exp_names = [cfg.split('/')[-1].split('.')[0] for cfg in configs]
 
     # Must be same length. 
     assert (len(configs) == len(exp_names))
 
     # Generate one command per seed. 
     for idx in range(len(configs)):
-        commands = commands + ['bash scripts/train.sh {}_{} {}'.format(exp_names[idx], i, configs[idx]) for i in range(args.n_seeds)]
+        commands = commands + ['bash scripts/train.sh {}/{} {}'.format(exp_names[idx], i, configs[idx]) for i in range(args.n_seeds)]
 
     return commands 
+
+def aggregate_results(args):
+    
+    # Compute results across all seeds of each config. 
+    for cfg_name in args.config_names: 
+        
+        # Name for experiment folder. 
+        name = cfg_name.split('/')[-1].split('.')[0]
+        exp_dir = 'snap/{}'.format(name)
+        
+        # Seed directories. 
+        seed_dirs = os.listdir(exp_dir)
+        results = {}
+        
+        for seed_dir in seed_dirs: 
+            results_path = os.path.join(exp_dir, seed_dir, 'checkpoints', 'vl-results-.json')
+            
+            # Read results. 
+            result_lines = [r for r in open(results_path, 'r')]
+            acc, nonvis, visual = result_lines[1:4]
+            
+            # Parse
+            acc = float(acc.split(':')[-1].split(',')[0].strip())
+            nonvis = float(nonvis.split(':')[-1].split(',')[0].strip())
+            visual = float(visual.split(':')[-1].split(',')[0].strip())
+            
+            results['acc'] = results.get('acc', []) + [acc]
+            results['nonvis'] = results.get('nonvis', []) + [nonvis]
+            results['visual'] = results.get('nvisual', []) + [visual]
+        
+        # Print out results. 
+        acc = np.mean(results['acc'])
+        acc_std = np.std(results['acc'])
+        
+        nonvis = np.mean(results['nonvis'])
+        nonvis_std = np.std(results['nonvis'])
+        
+        visual = np.mean(results['visual'])
+        visual_std = np.std(results['visual'])
+        
+        print('{}\nACC: {} +/- {}\nBlind: {} +/- {}\nVisual: {} +/- {}\n\n'.format(name, acc, acc_std, nonvis, nonvis_std, visual, visual_std))
 
 if __name__ == '__main__':
 
@@ -95,15 +139,17 @@ if __name__ == '__main__':
     parser.add_argument('--worker_out_dir', type=str, default='.', help='Directory for workers to spit output to.')
 
     # Arguments for multiseed experiment. 
-    parser.add_argument('--exp_names', type=str, default='test', help='Comma separated names for the parent experiments that are being run across seeds.')
-    parser.add_argument('--config_names', type=str, help='Comma separated paths to configuration files to use for running experiment.')
+    #parser.add_argument('--exp_names', type=str, default='test', help='Comma separated names for the parent experiments that are being run across seeds.')
+    parser.add_argument('--config_names', type=str, nargs='*', help='Paths to configuration files to use for running experiment.')
     parser.add_argument('--n_seeds', type=int, default=3, help='Number of seeds to run experiment with.')
 
     args = parser.parse_args()
 
     # Generate list of commands to run. 
     if args.job_type == 'multiseed':
-        commands = gen_multiseed_commands(args)    
+        commands = gen_multiseed_commands(args) 
+    elif args.job_type == 'aggregate_results':
+        aggregate_results(args)   
 
     # Parallelize them to run on GPUs that are available. 
     run_jobs(commands, args.gpus)

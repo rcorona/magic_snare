@@ -5,7 +5,7 @@ hydra:
     dir: ${root_dir}/${train.exps_folder}/
     subdir: ${train.folder}
 
-root_dir: /home/rcorona/dev/snare-master # TODO Modify this as needed. 
+root_dir: /home/rcorona/2022/lang_nerf/vlg/snare-master # TODO Modify this as needed. 
 
 tag: default
 seed: 0
@@ -48,6 +48,7 @@ data:
   legoformer_feats-1: '${root_dir}/data/1-view_embeddings.json'
   
   shapenet_voxel_dir: '${root_dir}/data/models-binvox-solid'
+  legoformer_multiview_feats: '${root_dir}/data/legoformer_multiview_feats'
 
   custom_renders: True
   custom_render_path: '${root_dir}/data/nmr_snare_render/shapenet_images_64_2.7/'

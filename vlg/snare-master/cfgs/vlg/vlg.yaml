@@ -5,7 +5,7 @@ hydra:
     dir: ${root_dir}/${train.exps_folder}/
     subdir: ${train.folder}
 
-root_dir: /home/rcorona/dev/snare-master # TODO Modify this as needed. 
+root_dir: /home/rcorona/2022/lang_nerf/vlg/snare-master # TODO Modify this as needed. 
 
 tag: default
 seed: 0
@@ -44,9 +44,13 @@ data:
   clip_img_feats: '${root_dir}/data/shapenet-clipViT32-frames.json'
   clip_img_feat_dir: '${root_dir}/data/shapenet-clipViT32-frames/'
   
+  # TODO is this deprecated?
   legoformer_feats-8: '${root_dir}/data/8-view_embeddings.json' 
   legoformer_feats-1: '${root_dir}/data/1-view_embeddings.json'
-  
+  ##
+
+  legoformer_multiview_feats: '${root_dir}/data/legoformer_multiview_feats'
+
   shapenet_voxel_dir: '${root_dir}/data/models-binvox-solid'
 
   custom_renders: True

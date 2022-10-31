@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import pdb
 
 import torch
 import torch.nn as nn
@@ -34,6 +35,13 @@ class SingleClassifier(LightningModule):
         self.aggregator_type = self.cfg['train']['aggregator']['type']
         self.aggregator = agg.names[self.aggregator_type](agg_cfg)
 
+        # Keep track of predictions for visualizations later. 
+        self.val_predictions = {
+            'probs': [],
+            'labels': [],
+            'visual': []
+        }
+
         # build network
         self.build_model()
 
@@ -47,10 +55,6 @@ class SingleClassifier(LightningModule):
 
         # results save path
         self.save_path = Path(os.getcwd())
-
-        if os.path.exists(self.cfg['train']['training_dynamics_dir']):
-            shutil.rmtree(self.cfg['train']['training_dynamics_dir'])
-        os.makedirs(self.cfg['train']['training_dynamics_dir'])
 
         # log with wandb
         self.log_data = self.cfg['train']['log']
@@ -201,14 +205,6 @@ class SingleClassifier(LightningModule):
 
         probs = F.softmax(probs, dim=-1)
 
-        for i in range(len(annotations)):
-            # save each one as a dict in a json
-            item = {'annotation':annotations[i], 'obj_0':obj_key_0[i], 'obj_1':obj_key_1[i], 'probs':probs[i].cpu().detach().numpy(), 'labels':labels[i].cpu().detach().numpy(), 'is_visual':visual[i].cpu().detach().numpy()}
-            
-
-            with open(os.path.join(self.cfg['train']['training_dynamics_dir'], 'epoch_'+str(self.current_epoch)+'.jsonl'), 'a+') as f:
-                f.write(str(item))
-                f.write('\n')
         # classifier loss
         losses = self._criterion(out)
 
@@ -234,6 +230,11 @@ class SingleClassifier(LightningModule):
 
         probs = F.softmax(probs, dim=-1)
         metrics = self.compute_metrics(labels, losses, probs, visual, num_steps, out)
+
+        # Keep track of predictions. 
+        self.val_predictions['labels'].append(labels.cpu().numpy())
+        self.val_predictions['probs'].append(probs.cpu().numpy())
+        self.val_predictions['visual'].append(visual.long().cpu().numpy())
 
         return dict(
             val_loss=metrics['val_loss'],
@@ -291,6 +292,11 @@ class SingleClassifier(LightningModule):
 
     def validation_epoch_end(self, all_outputs, mode='vl'):
         sanity_check = True
+        
+        # Consolidate all predictions. 
+        self.val_predictions['probs'] = np.concatenate(self.val_predictions['probs'], axis=0)
+        self.val_predictions['labels'] = np.concatenate(self.val_predictions['labels'], axis=0)
+        self.val_predictions['visual'] = np.concatenate(self.val_predictions['visual'], axis=0)
 
         res = {
             'val_loss': 0.0,
@@ -352,6 +358,15 @@ class SingleClassifier(LightningModule):
                 if res[f'{mode}/acc'] > self.best_val_acc:
                     self.best_val_acc = res[f'{mode}/acc']
                     self.best_val_res = dict(res)
+                    
+                    # Store predictions. 
+                    preds_path = os.path.join(self.save_path, 'val_preds.npz')
+                    np.savez(
+                        preds_path, 
+                        probs=self.val_predictions['probs'],
+                        labels=self.val_predictions['labels'],
+                        visual=self.val_predictions['visual']
+                    )
 
             # results to save
             results_dict = self.best_test_res if mode == 'test' else self.best_val_res
@@ -375,6 +390,13 @@ class SingleClassifier(LightningModule):
 
         # Add results to log dictionary. 
         pass#wandb.log(res, self.step_num)
+
+        # Re-initialize val predictions buffer. 
+        self.val_predictions = {
+            'probs': [],
+            'labels': [],
+            'visual': []
+        }
 
         return dict(
             val_loss=res[f'{mode}/loss'],
