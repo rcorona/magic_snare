@@ -149,7 +149,8 @@ if __name__ == '__main__':
     if args.job_type == 'multiseed':
         commands = gen_multiseed_commands(args) 
     elif args.job_type == 'aggregate_results':
-        aggregate_results(args)   
+        aggregate_results(args) 
+        exit()  
 
     # Parallelize them to run on GPUs that are available. 
     run_jobs(commands, args.gpus)
