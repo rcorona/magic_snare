@@ -21,6 +21,7 @@ import imageio
 
 import legoformer.data as transforms
 from legoformer.data.dataset import ShapeNetDataset
+from legoformer.util.binvox_rw import read_as_3d_array
 from data.verify_shapenet import get_snare_objs
 from pixelnerf.src.model import make_model
 from pixelnerf.src.util.util import gen_rays, pose_spherical
@@ -898,10 +899,31 @@ class CLIPGraspingDataset(torch.utils.data.Dataset):
             
             # Use pre-extracted features if not fine-tuning. 
             if self.cfg['transformer']['freeze_legoformer']:
-                 obj1_feats = self.get_legoformer_feats(key1)
-                 obj2_feats = self.get_legoformer_feats(key2)
+                
+                # Either use explicit voxel maps dervied from depth. 
+                if self.cfg['data']['use_explicit_voxels']:
+                    
+                    # Load explicit feature. 
+                    feat1_path = os.path.join(self.cfg['data']['explicit_voxelmaps_path'], '{}.binvox'.format(key1))
+                    
+                    with open(feat1_path, 'rb') as f1: 
+                        obj1_voxelmap = read_as_3d_array(f1)
+                    
+                    feat2_path = os.path.join(self.cfg['data']['explicit_voxelmaps_path'], '{}.binvox'.format(key2))
+                    
+                    with open(feat2_path, 'rb') as f2:
+                        obj2_voxelmap = read_as_3d_array(f2)                   
+                    
+                    # Extract data from voxelmaps. 
+                    obj1_feats = obj1_voxelmap.data.astype(np.float32)
+                    obj2_feats = obj2_voxelmap.data.astype(np.float32)
+                    
+                # Or use those derived from LegoFormer. 
+                else: 
+                    obj1_feats = self.get_legoformer_feats(key1)
+                    obj2_feats = self.get_legoformer_feats(key2)
                  
-                 feats['obj_feats'] = (obj1_feats, obj2_feats)
+                feats['obj_feats'] = (obj1_feats, obj2_feats)
                  
             # If fine-tuning LegoFormer use VGG16 feats.
             else:             

@@ -70,6 +70,18 @@ class TransformerClassifier(LightningModule):
         self.frozen_legoformer = self.cfg['transformer']['freeze_legoformer']
         self.frozen_clip = self.cfg['transformer']['freeze_clip']
 
+        # 3D CNN for explicit voxelmaps. 
+        if self.cfg['data']['use_explicit_voxels']:
+            self.conv3d = nn.Sequential(
+                nn.Conv3d(in_channels=1,out_channels=32, kernel_size=5, stride=2),
+                nn.ReLU(),
+                nn.Dropout(p=0.2),
+                nn.Conv3d(in_channels=32, out_channels=32, kernel_size=3),
+                nn.ReLU(),
+                nn.MaxPool3d(2),
+                nn.Dropout(p=0.3)
+            )
+
         # Constants
         self.img_feat_dim = 512
         self.lang_feat_dim = 512
@@ -78,10 +90,14 @@ class TransformerClassifier(LightningModule):
 
         # Determine dimension of object features. 
         if self.feats_backbone == 'legoformer': 
-            if self.cfg['transformer']['xyz_embeddings']:
-                self.obj_feat_dim = 32 * 3 
+            
+            if self.cfg['data']['use_explicit_voxels']:
+                self.obj_feat_dim = 192
             else: 
-                self.obj_feat_dim = 768
+                if self.cfg['transformer']['xyz_embeddings']:
+                    self.obj_feat_dim = 32 * 3 
+                else: 
+                    self.obj_feat_dim = 768
 
         elif self.feats_backbone == 'pix2vox': 
             self.obj_feat_dim = 8192
@@ -358,6 +374,18 @@ class TransformerClassifier(LightningModule):
                 obj2_n_feats = obj2_n_feats.cuda()
                 
                 obj1_reconstruction, obj2_reconstruction = None, None
+                
+                # Post process with 3D CNN if using explicit voxelmap. 
+                if self.cfg['data']['use_explicit_voxels']:
+                    
+                    # Extract 3D spatial features. 
+                    bz = obj1_n_feats.size(0)
+                    obj1_n_feats = self.conv3d(obj1_n_feats.unsqueeze(1)).reshape(bz, -1, 6, 6)
+                    obj2_n_feats = self.conv3d(obj2_n_feats.unsqueeze(1)).reshape(bz, -1, 6, 6)
+                    
+                    # Reshape into "tokens"
+                    obj1_n_feats = torch.transpose(obj1_n_feats, 1, -1).reshape(bz, -1, 192)
+                    obj2_n_feats = torch.transpose(obj1_n_feats, 1, -1).reshape(bz, -1, 192)
                 
             # Otherwise extract them. 
             else: 
@@ -946,9 +974,11 @@ class TransformerClassifier(LightningModule):
         sanity_check = True
 
         # Consolidate all predictions. 
+        """
         self.val_predictions['probs'] = np.concatenate(self.val_predictions['probs'], axis=0)
         self.val_predictions['labels'] = np.concatenate(self.val_predictions['labels'], axis=0)
         self.val_predictions['visual'] = np.concatenate(self.val_predictions['visual'], axis=0)
+        """
 
         res = {
             'val_loss': 0.0,
@@ -1020,6 +1050,7 @@ class TransformerClassifier(LightningModule):
                     self.best_val_res = dict(res)
                     
                     # Store predictions. 
+                    """
                     preds_path = os.path.join(self.save_path, 'val_preds.npz')
                     np.savez(
                         preds_path, 
@@ -1027,6 +1058,7 @@ class TransformerClassifier(LightningModule):
                         labels=self.val_predictions['labels'],
                         visual=self.val_predictions['visual']
                     )
+                    """
 
             # results to save
             results_dict = self.best_test_res if mode == 'test' else self.best_val_res
@@ -1040,8 +1072,10 @@ class TransformerClassifier(LightningModule):
             json_file = os.path.join(self.save_path, f'{mode}-results-{seed}.json')
 
             # save results
+            """
             with open(json_file, 'w') as f:
                 json.dump(results_dict, f, sort_keys=True, indent=4)
+            """
 
             # print best result
             print("\nBest-----:")
