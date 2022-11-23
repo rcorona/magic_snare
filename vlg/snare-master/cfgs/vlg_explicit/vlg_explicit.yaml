@@ -50,13 +50,14 @@ data:
   ##
 
   legoformer_multiview_feats: '${root_dir}/data/legoformer_multiview_feats'
+  explicit_voxelmaps_path: '${root_dir}/data/snare_binvox_from_depth'
 
   shapenet_voxel_dir: '${root_dir}/data/models-binvox-solid'
 
   custom_renders: True
   custom_render_path: '${root_dir}/data/nmr_snare_render/shapenet_images_64_2.7/'
   blind_only: False
-  use_explicit_voxels: False
+  use_explicit_voxels: True
 
   n_views: 8
 

@@ -115,7 +115,7 @@ def aggregate_results(args):
             
             results['acc'] = results.get('acc', []) + [acc]
             results['nonvis'] = results.get('nonvis', []) + [nonvis]
-            results['visual'] = results.get('nvisual', []) + [visual]
+            results['visual'] = results.get('visual', []) + [visual]
         
         # Print out results. 
         acc = np.mean(results['acc'])
