@@ -54,7 +54,7 @@ data:
 
   shapenet_voxel_dir: '${root_dir}/data/models-binvox-solid'
 
-  custom_renders: True
+  custom_renders: False
   custom_render_path: '${root_dir}/data/nmr_snare_render/shapenet_images_64_2.7/'
   blind_only: False
   use_explicit_voxels: True
