@@ -19,7 +19,7 @@ from legoformer import LegoFormerM, LegoFormerS
 from legoformer.util.utils import load_config
 from legoformer.data.datamodule import ShapeNetDataModule
 
-@hydra.main(config_path="cfgs", config_name="train")
+@hydra.main(config_path=".", config_name="train")
 def main(cfg):
     # set random seeds
     if cfg['train']['random_seed'] == '':

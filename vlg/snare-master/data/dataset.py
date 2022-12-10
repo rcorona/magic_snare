@@ -851,9 +851,11 @@ class CLIPGraspingDataset(torch.utils.data.Dataset):
         feats['is_visual'] = entry['visual'] if 'ans' in entry else -1
 
         # Select view indexes randomly # TODO need to select them consistently for evaluation.
-        view_idxs1 = np.random.choice(8, self.n_views, replace=False)
-        view_idxs2 = np.random.choice(8, self.n_views, replace=False)
-
+        #view_idxs1 = np.random.choice(8, self.n_views, replace=False)
+        #view_idxs2 = np.random.choice(8, self.n_views, replace=False)
+        view_idxs1 = np.arange(self.n_views)
+        view_idxs2 = np.arange(self.n_views)
+        
         ## Img feats
         # For CLIP filter to use only desired amount of views (in this case 8). 
         if self.use_img_feats: 

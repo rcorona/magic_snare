@@ -216,7 +216,7 @@ class TransformerClassifier(LightningModule):
 
             # Learned positional encodings for perceiver. 
             self.pos_encoding = nn.Parameter(torch.randn(1,
-                                                         lang_max_seq_len + spatial_size ** 3,
+                                                         lang_max_seq_len + spatial_size ** 3 + 8,
                                                          input_dim_before_seq))
             
             # Perceiver. 
@@ -635,9 +635,13 @@ class TransformerClassifier(LightningModule):
                 latents = repeat(self.latents, 'n d -> b n d', b=obj1_enc.size(0))
                 cross_attn, cross_ff = self.cross_attend_blocks
                 
+                # Project image features into transformer embedding space. 
+                img1_feats = self.img_fc(img1_n_feats)
+                img2_feats = self.img_fc(img2_n_feats)
+            
                 # Positional encoding and input prep. 
-                obj1_in = torch.cat([obj1_enc, lang_enc], dim=1)
-                obj2_in = torch.cat([obj2_enc, lang_enc], dim=1)
+                obj1_in = torch.cat([obj1_enc, img1_feats, lang_enc], dim=1)
+                obj2_in = torch.cat([obj2_enc, img2_feats, lang_enc], dim=1)
                 
                 obj1_in = self.pos_encoding[:,:obj1_in.size(1),:] + obj1_in
                 obj2_in = self.pos_encoding[:,:obj2_in.size(1),:] + obj2_in
