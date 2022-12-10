@@ -211,7 +211,8 @@ class TransformerClassifier(LightningModule):
             spatial_size = 6
         
             # Perciever latents. 
-            self.latents = nn.Parameter(torch.randn(12, input_dim_before_seq))
+            n_latents = self.cfg['transformer']['n_latents']
+            self.latents = nn.Parameter(torch.randn(n_latents, input_dim_before_seq))
 
             # Learned positional encodings for perceiver. 
             self.pos_encoding = nn.Parameter(torch.randn(1,
@@ -961,9 +962,11 @@ class TransformerClassifier(LightningModule):
         self.log_dict['tr/acc'] = (correct.sum() / correct.size(0)).detach().cpu().numpy()
 
         # Compute visualization of correctness for some samples for debugging model. 
+        """
         if self.step_num % self.cfg['wandb']['logger']['img_log_freq'] == 0: 
             self.visualize_examples(batch, out, 20, 'train')
-
+        """
+        
         return dict(
             loss=losses['loss']
         )
@@ -1092,8 +1095,10 @@ class TransformerClassifier(LightningModule):
         self.val_step_num += 1
 
         # Visualize results for first batch from validation set. 
+        """
         if self.val_step_num == 1 and self.epoch_num % self.cfg['wandb']['logger']['val_img_log_epoch_freq'] == 0: 
             self.visualize_examples(batch, out, 20, 'val')
+        """
 
         self.val_step_num += 1
 

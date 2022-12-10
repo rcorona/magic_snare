@@ -5,6 +5,10 @@ import os
 import subprocess
 import json
 import numpy as np
+import csv
+import yaml
+import itertools
+import copy
 
 def permute_combos(list1, list2, l1_prefix='', l2_prefix=''):
     """
@@ -42,7 +46,7 @@ def run_job(command_args):
     # Call command with redirected output to not confuse command line. 
     out_path = os.path.join(args.worker_out_dir, '{}_out.txt'.format(pid))
     print('Running: {}'.format(command))
-    subprocess.run(command.split(), stdout=open(out_path, 'w'))
+    subprocess.run(command.split())
 
 def run_jobs(commands, gpus):
     """
@@ -90,6 +94,17 @@ def gen_multiseed_commands(args):
 
 def aggregate_results(args):
     
+    # Prep CSV file header.   
+    csvfile = open('test.csv', 'w', newline='') 
+    writer = csv.writer(csvfile, delimiter=',')
+    
+    # Seeds for header. 
+    seed_h = ['Seed {} ACC'.format(seed) for seed in range(args.n_seeds)]
+    
+    # Header. 
+    header = ['Config Name'] + seed_h
+    writer.writerow(header)
+    
     # Compute results across all seeds of each config. 
     for cfg_name in args.config_names: 
         
@@ -100,7 +115,7 @@ def aggregate_results(args):
         # Seed directories. 
         seed_dirs = os.listdir(exp_dir)
         results = {}
-        
+    
         for seed_dir in seed_dirs: 
             results_path = os.path.join(exp_dir, seed_dir, 'checkpoints', 'vl-results-.json')
             
@@ -118,17 +133,65 @@ def aggregate_results(args):
             results['visual'] = results.get('visual', []) + [visual]
         
         # Print out results. 
-        acc = np.mean(results['acc'])
-        acc_std = np.std(results['acc'])
+        acc = np.mean(results['acc']) * 100.0
+        acc_std = np.std(results['acc']) * 100.0
         
-        nonvis = np.mean(results['nonvis'])
-        nonvis_std = np.std(results['nonvis'])
+        nonvis = np.mean(results['nonvis']) * 100.0
+        nonvis_std = np.std(results['nonvis']) * 100.0
         
-        visual = np.mean(results['visual'])
-        visual_std = np.std(results['visual'])
+        visual = np.mean(results['visual']) * 100.0
+        visual_std = np.std(results['visual']) * 100.0
         
         print('{}\nACC: {} +/- {}\nBlind: {} +/- {}\nVisual: {} +/- {}\n\n'.format(name, acc, acc_std, nonvis, nonvis_std, visual, visual_std))
+            
+        # Add row to CSV file. 
+        row = [cfg_name] + ['{:2.2f}'.format(r * 100.0) for r in results['acc']]
+        
+        # Write to file. 
+        writer.writerow(row)   
+        
+    # Close CSV file. 
+    csvfile.close() 
+    
+def make_config_variants(args):
+    """
+    Generate config files for all variants of a given flag using 
+    a provided template config file. All generated configs will be placed
+    in the template config's directory. 
+    """
+    # Load input config file. 
+    base_config = yaml.safe_load(open(args.config_variation_file, 'r'))
 
+    # Directory where variant configs should be stored. 
+    config_dir = os.path.split(args.config_variation_file)[0]
+
+    # Get Cartesian product of all variable settings to do grid search. 
+    flags_settings = [arg.strip().split(',') for arg in args.flags_variant_list]
+    product = [p for p in itertools.product(*flags_settings)]
+
+    # Make a config for each variant of parameter provided. 
+    for vals in product:
+        
+        # Will modify copy. 
+        config = copy.deepcopy(base_config)
+        
+        # Replace desired flags with premutation of values. 
+        for idx in range(len(vals)):
+            
+            # Extract pertinent information for flag and setting. 
+            f_category, flag = args.variant_flags[idx].split('.')
+            val = vals[idx]
+            f_type = getattr(__builtins__, args.flag_types[idx])
+            
+            # Update flag value. 
+            config[f_category][flag] = f_type(val)
+        
+        # Store config variant in configuration dir. 
+        config_path = os.path.join(config_dir, '{}.yaml'.format('_'.join(vals)))
+        
+        with open(config_path, 'w') as f: 
+            yaml.dump(config, f)
+    
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(description='Batch a set of experiments.')
@@ -143,6 +206,12 @@ if __name__ == '__main__':
     parser.add_argument('--config_names', type=str, nargs='*', help='Paths to configuration files to use for running experiment.')
     parser.add_argument('--n_seeds', type=int, default=3, help='Number of seeds to run experiment with.')
 
+    # Arguments for making variants of configuration files. 
+    parser.add_argument('--variant_flags', nargs='*', help='Flag to make variant configs for when tuning.')
+    parser.add_argument('--flags_variant_list', nargs='*', help='List of variants for flag to vary when tuning.')
+    parser.add_argument('--config_variation_file', type=str, help='Path to directory where to generate all config variations.')
+    parser.add_argument('--flag_types', nargs='*', help='Types of each flag being modified.')
+
     args = parser.parse_args()
 
     # Generate list of commands to run. 
@@ -151,6 +220,9 @@ if __name__ == '__main__':
     elif args.job_type == 'aggregate_results':
         aggregate_results(args) 
         exit()  
+    elif args.job_type == 'make_config_variants':
+        make_config_variants(args)
+        exit()
 
     # Parallelize them to run on GPUs that are available. 
     run_jobs(commands, args.gpus)
