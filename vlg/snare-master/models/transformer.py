@@ -22,6 +22,7 @@ from legoformer.util.utils import load_config
 import models.aggregator as agg
 from legoformer.model.transformer import Encoder
 from legoformer.util.metrics import calculate_iou, calculate_fscore
+from data.peract_voxelizer import VoxelGrid
 
 ## From https://github.com/peract/peract/blob/main/agents/peract_bc/perceiver_lang_io.py
 def exists(val):
@@ -180,6 +181,19 @@ class TransformerClassifier(LightningModule):
         self.lang_feat_dim = 512
         self.feat_dim = 256
         self.num_views = 8
+
+        # For RGB point clouds. 
+        if self.cfg['data']['use_rgb_pc']:
+            
+            self.bounds = torch.Tensor([-1.0, -1.0, -1.0, 1.0, 1.0, 1.0]).cuda()
+            
+            self.voxelizer = VoxelGrid(coord_bounds=self.bounds,
+                voxel_size=100,
+                device='cuda:0',
+                batch_size=self.cfg['train']['batch_size'],
+                feature_size=3,
+                max_num_coords=8912,
+            ).cuda()
 
         # 3D CNN for explicit voxelmaps. 
         if self.cfg['data']['use_explicit_voxels']:
@@ -563,6 +577,18 @@ class TransformerClassifier(LightningModule):
                     # Rearrange for inputting into perceiver. 
                     obj1_n_feats = rearrange(obj1_n_feats, 'b d ... -> b (...) d')
                     obj2_n_feats = rearrange(obj2_n_feats, 'b d ... -> b (...) d')
+                
+                elif self.cfg['data']['use_rgb_pc']:
+                    bz = obj1_n_feats.size(0)
+                    
+                    pcd = obj1_n_feats[:,:,:3]
+                    rgb = obj1_n_feats[:,:,3:]
+                    
+                    voxel_grid = self.voxelizer.coords_to_bounding_voxel_grid(
+                        pcd, coord_features=rgb, coord_bounds=self.bounds)
+                    
+                    pdb.set_trace()
+                    # TODO Do Peract preprocessing step and connect to perceiver.
                 
             # Otherwise extract them. 
             else: 

@@ -18,11 +18,13 @@ import pickle
 from tqdm import tqdm
 from pyhocon import ConfigFactory
 import imageio
+import open3d as o3d
 
 import legoformer.data as transforms
 from legoformer.data.dataset import ShapeNetDataset
 from legoformer.util.binvox_rw import read_as_3d_array
 from data.verify_shapenet import get_snare_objs
+from data.peract_voxelizer import VoxelGrid
 from pixelnerf.src.model import make_model
 from pixelnerf.src.util.util import gen_rays, pose_spherical
 from pixelnerf.src.render.nerf import NeRFRenderer
@@ -813,6 +815,42 @@ class CLIPGraspingDataset(torch.utils.data.Dataset):
         
         return np.load(feat_path)
 
+    def load_pointcloud(self, key):
+        
+        def pc_norm(pc):
+            """ pc: NxC, return NxC """
+
+            # first normalize it between 0 and 1!
+            pc = pc
+
+            centroid = np.mean(pc, axis=0)
+            pc = pc - centroid
+            m = np.max(np.sqrt(np.sum(pc**2, axis=1)))
+            pc = pc / m
+            return pc
+        
+        # Load point cloud. 
+        pc = o3d.io.read_point_cloud(os.path.join(self.cfg['data']['rgb_pc_path'], '{}.pcd'.format(key)))
+        data = np.array(pc.points).astype(np.float32)
+        colors = np.array(pc.colors).astype(np.float32)
+
+        # Normalize colors.
+        if (np.amax(colors) - np.amin(colors)) != 0:
+            normalized_colors = (colors - np.amin(colors)) / (np.amax(colors) - np.amin(colors))
+        else: 
+            normalized_colors = (colors - np.amin(colors))
+
+        colors = 2*normalized_colors-1
+
+        # Normalize point cloud.
+        data = pc_norm(data)
+
+        # Concatenate colors to point cloud.
+        data = np.concatenate([data, colors], -1)
+        data = torch.from_numpy(data).float()
+
+        return data
+
     def __getitem__(self, idx):
 
         if self.cfg['train']['tiny_dataset']:
@@ -919,6 +957,13 @@ class CLIPGraspingDataset(torch.utils.data.Dataset):
                     # Extract data from voxelmaps. 
                     obj1_feats = obj1_voxelmap.data.astype(np.float32)
                     obj2_feats = obj2_voxelmap.data.astype(np.float32)
+                    
+                # Or use RGB point clouds. 
+                elif self.cfg['data']['use_rgb_pc']:
+                    
+                    # Path to point cloud for objects. 
+                    obj1_feats = self.load_pointcloud(key1)
+                    obj2_feats = self.load_pointcloud(key2)
                     
                 # Or use those derived from LegoFormer. 
                 else: 
