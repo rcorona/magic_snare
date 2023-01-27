@@ -255,7 +255,7 @@ class TransformerClassifier(LightningModule):
             self.bounds = torch.Tensor([-1.0, -1.0, -1.0, 1.0, 1.0, 1.0]).cuda()
             
             self.voxelizer = VoxelGrid(coord_bounds=self.bounds,
-                voxel_size=100,
+                voxel_size=32,
                 device='cuda:0',
                 batch_size=self.cfg['train']['batch_size'],
                 feature_size=3,
