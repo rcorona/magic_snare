@@ -252,16 +252,6 @@ class TransformerClassifier(LightningModule):
         # For RGB point clouds. 
         if self.cfg['data']['use_rgb_pc']:
             
-            self.bounds = torch.Tensor([-1.0, -1.0, -1.0, 1.0, 1.0, 1.0]).cuda()
-            
-            self.voxelizer = VoxelGrid(coord_bounds=self.bounds,
-                voxel_size=32,
-                device='cuda:0',
-                batch_size=self.cfg['train']['batch_size'],
-                feature_size=3,
-                max_num_coords=8912,
-            ).cuda()
-            
             init_dim = 10
             im_channels = 64
             voxel_patch_size = 5
@@ -615,15 +605,19 @@ class TransformerClassifier(LightningModule):
             return feats
 
     def patchify_rgbpc(self, rgbpc):
-        bz = rgbpc.size(0)
         
-        pcd = rgbpc[:,:,:3]
-        rgb = rgbpc[:,:,3:]
+        if self.cfg['data']['use_precomputed_voxels']:
+            voxel_grid = rgbpc
+        else: 
+            bz = rgbpc.size(0)
         
-        # Voxelize point cloud and patchify. 
-        voxel_grid = self.voxelizer.coords_to_bounding_voxel_grid(
-            pcd, coord_features=rgb, coord_bounds=self.bounds)
-        voxel_grid = voxel_grid.permute(0, 4, 1, 2, 3).detach()
+            pcd = rgbpc[:,:,:3]
+            rgb = rgbpc[:,:,3:]
+            
+            # Voxelize point cloud and patchify. 
+            voxel_grid = self.voxelizer.coords_to_bounding_voxel_grid(
+                pcd, coord_features=rgb, coord_bounds=self.bounds)
+            voxel_grid = voxel_grid.permute(0, 4, 1, 2, 3).detach()
         
         d0 = self.input_preprocess(voxel_grid)
         ins = self.patchify(d0)

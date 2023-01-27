@@ -8,6 +8,11 @@ import pdb
 
 import torch
 from torch import nn
+from torch.utils.data import DataLoader
+import open3d as o3d
+import numpy as np
+import os
+from tqdm import tqdm
 
 MIN_DENOMINATOR = 1e-12
 INCLUDE_PER_VOXEL_COORD = False
@@ -198,3 +203,104 @@ class VoxelGrid(nn.Module):
         return torch.cat(
            [vox[..., :-1], self._index_grid[:, :-2, :-2, :-2] / self._voxel_d,
             vox[..., -1:]], -1)
+        
+class RGBPCDataset(torch.utils.data.Dataset):
+            
+    def __init__(self, pcd_folder):
+        self.pcd_folder = pcd_folder
+        
+        # Get all file keys. 
+        files = os.listdir(self.pcd_folder)
+        self.keys = [f.split('.')[0] for f in files if f.endswith('.pcd')]
+        
+        # Folder to put all processed voxelmaps into. 
+        parent_dir = os.path.split(self.pcd_folder)[0]
+        self.vm_folder = os.path.join(parent_dir, 'shapenetsem_rgb_voxelmaps')
+            
+        # Create folder if it doesn't exist.
+        if not os.path.isdir(self.vm_folder):
+            os.mkdir(self.vm_folder)
+            
+    def __len__(self):
+        return len(self.keys)
+            
+    def load_pointcloud(self, key):
+        
+        def pc_norm(pc):
+            """ pc: NxC, return NxC """
+
+            # first normalize it between 0 and 1!
+            pc = pc
+
+            centroid = np.mean(pc, axis=0)
+            pc = pc - centroid
+            m = np.max(np.sqrt(np.sum(pc**2, axis=1)))
+            pc = pc / m
+            return pc
+        
+        # Load point cloud. 
+        pc = o3d.io.read_point_cloud(os.path.join(self.pcd_folder, '{}.pcd'.format(key)))
+        data = np.array(pc.points).astype(np.float32)
+        colors = np.array(pc.colors).astype(np.float32)
+
+        # Normalize colors.
+        if (np.amax(colors) - np.amin(colors)) != 0:
+            normalized_colors = (colors - np.amin(colors)) / (np.amax(colors) - np.amin(colors))
+        else: 
+            normalized_colors = (colors - np.amin(colors))
+
+        colors = 2*normalized_colors-1
+
+        # Normalize point cloud.
+        data = pc_norm(data)
+
+        # Concatenate colors to point cloud.
+        data = np.concatenate([data, colors], -1)
+        data = torch.from_numpy(data).float()
+
+        return data
+    
+    def __getitem__(self, idx):
+        
+        # Load rgb pcd. 
+        pcd = self.load_pointcloud(self.keys[idx])
+
+        return pcd, idx
+    
+if __name__ == '__main__':
+    
+    # Dataset
+    dataset = RGBPCDataset(pcd_folder='/home/rcorona/2022/lang_nerf/vlg/snare-master/data/shapenetsem_color_pc')
+    dataloader = DataLoader(dataset, batch_size=1, shuffle=False, num_workers=8)
+    
+    # Voxelizer
+    bounds = torch.Tensor([-1.0, -1.0, -1.0, 1.0, 1.0, 1.0]).cuda()
+    
+    voxelizer = VoxelGrid(coord_bounds=bounds,
+        voxel_size=32,
+        device='cuda:0',
+        batch_size=1,
+        feature_size=3,
+        max_num_coords=8912,
+    ).cuda()
+
+    # Loop for voxelizing RGB PCs
+    for rgbpcd, idx in tqdm(dataloader):
+        
+        # Voxelize batch. 
+        bz = rgbpcd.size(0)
+        rgbpcd = rgbpcd.cuda()
+        
+        pcd = rgbpcd[:,:,:3]
+        rgb = rgbpcd[:,:,3:]
+        
+        voxel_grid = voxelizer.coords_to_bounding_voxel_grid(
+            pcd, coord_features=rgb, coord_bounds=bounds)
+        voxel_grid = voxel_grid.permute(0, 4, 1, 2, 3).detach().squeeze().cpu().numpy()
+    
+        # Save voxel grid. 
+        idx = idx.item()
+        key = dataset.keys[idx]
+        save_path = os.path.join(dataset.vm_folder, '{}.npy'.format(key))
+
+        np.save(save_path, voxel_grid)

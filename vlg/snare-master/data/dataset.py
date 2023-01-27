@@ -962,8 +962,12 @@ class CLIPGraspingDataset(torch.utils.data.Dataset):
                 elif self.cfg['data']['use_rgb_pc']:
                     
                     # Path to point cloud for objects. 
-                    obj1_feats = self.load_pointcloud(key1)
-                    obj2_feats = self.load_pointcloud(key2)
+                    if self.cfg['data']['use_precomputed_voxels']:
+                        obj1_feats = np.load(os.path.join(self.cfg['data']['rgb_vm_path'], '{}.npy'.format(key1)))
+                        obj2_feats = np.load(os.path.join(self.cfg['data']['rgb_vm_path'], '{}.npy'.format(key2)))
+                    else: 
+                        obj1_feats = self.load_pointcloud(key1)
+                        obj2_feats = self.load_pointcloud(key2)
                     
                 # Or use those derived from LegoFormer. 
                 else: 
