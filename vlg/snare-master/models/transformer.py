@@ -7,6 +7,7 @@ import pdb
 import math
 import cv2
 from functools import wraps
+from typing import List, Union
 
 import torch
 import torch.nn as nn
@@ -25,6 +26,66 @@ from legoformer.util.metrics import calculate_iou, calculate_fscore
 from data.peract_voxelizer import VoxelGrid
 
 ## From https://github.com/peract/peract/blob/main/agents/peract_bc/perceiver_lang_io.py
+LRELU_SLOPE = 0.02
+
+def act_layer(act):
+    if act == 'relu':
+        return nn.ReLU()
+    elif act == 'lrelu':
+        return nn.LeakyReLU(LRELU_SLOPE)
+    elif act == 'elu':
+        return nn.ELU()
+    elif act == 'tanh':
+        return nn.Tanh()
+    elif act == 'prelu':
+        return nn.PReLU()
+    else:
+        raise ValueError('%s not recognized.' % act)
+
+class Conv3DBlock(nn.Module):
+
+    def __init__(self, in_channels, out_channels,
+                 kernel_sizes: Union[int, list]=3, strides=1,
+                 norm=None, activation=None, padding_mode='replicate',
+                 padding=None):
+        super(Conv3DBlock, self).__init__()
+        padding = kernel_sizes // 2 if padding is None else padding
+        self.conv3d = nn.Conv3d(
+            in_channels, out_channels, kernel_sizes, strides, padding=padding,
+            padding_mode=padding_mode)
+
+        if activation is None:
+            nn.init.xavier_uniform_(self.conv3d.weight,
+                                    gain=nn.init.calculate_gain('linear'))
+            nn.init.zeros_(self.conv3d.bias)
+        elif activation == 'tanh':
+            nn.init.xavier_uniform_(self.conv3d.weight,
+                                    gain=nn.init.calculate_gain('tanh'))
+            nn.init.zeros_(self.conv3d.bias)
+        elif activation == 'lrelu':
+            nn.init.kaiming_uniform_(self.conv3d.weight, a=LRELU_SLOPE,
+                                     nonlinearity='leaky_relu')
+            nn.init.zeros_(self.conv3d.bias)
+        elif activation == 'relu':
+            nn.init.kaiming_uniform_(self.conv3d.weight, nonlinearity='relu')
+            nn.init.zeros_(self.conv3d.bias)
+        else:
+            raise ValueError()
+
+        self.activation = None
+        self.norm = None
+        if norm is not None:
+            raise NotImplementedError('Norm not implemented.')
+        if activation is not None:
+            self.activation = act_layer(activation)
+        self.out_channels = out_channels
+
+    def forward(self, x):
+        x = self.conv3d(x)
+        x = self.norm(x) if self.norm is not None else x
+        x = self.activation(x) if self.activation is not None else x
+        return x
+
 def exists(val):
     return val is not None
 
@@ -181,6 +242,12 @@ class TransformerClassifier(LightningModule):
         self.lang_feat_dim = 512
         self.feat_dim = 256
         self.num_views = 8
+        
+        if self.cfg['data']['use_rgb_pc']:
+            self.feat_dim = 64
+
+        # Use perceiver for explicit voxel maps provide directly or through point clouds. 
+        self.use_peract = self.cfg['data']['use_explicit_voxels'] or self.cfg['data']['use_rgb_pc']
 
         # For RGB point clouds. 
         if self.cfg['data']['use_rgb_pc']:
@@ -193,6 +260,23 @@ class TransformerClassifier(LightningModule):
                 batch_size=self.cfg['train']['batch_size'],
                 feature_size=3,
                 max_num_coords=8912,
+            ).cuda()
+            
+            init_dim = 10
+            im_channels = 64
+            voxel_patch_size = 5
+            voxel_patch_stride = 5
+            activation = 'relu'
+            
+            self.input_preprocess = Conv3DBlock(
+                init_dim, im_channels, kernel_sizes=1, strides=1,
+                norm=None, activation=activation
+            ).cuda()
+            
+            self.patchify = Conv3DBlock(
+                self.input_preprocess.out_channels, im_channels,
+                kernel_sizes=voxel_patch_size, strides=voxel_patch_stride,
+                norm=None, activation=activation
             ).cuda()
 
         # 3D CNN for explicit voxelmaps. 
@@ -209,6 +293,8 @@ class TransformerClassifier(LightningModule):
                 nn.Dropout(p=0.3)
             )
             
+        if self.use_peract:
+            
             # Perceiver parameters. 
             cross_heads = 1
             cross_dim_head = 64
@@ -222,7 +308,11 @@ class TransformerClassifier(LightningModule):
             attn_dropout = 0.1
             decoder_dropout = 0.0    
             lang_max_seq_len = 100
-            spatial_size = 6
+
+            if self.cfg['data']['use_explicit_voxels']:
+                spatial_size = 6
+            elif self.cfg['data']['use_rgb_pc']:
+                spatial_size = 20
         
             # Perciever latents. 
             n_latents = self.cfg['transformer']['n_latents']
@@ -524,6 +614,22 @@ class TransformerClassifier(LightningModule):
         else: 
             return feats
 
+    def patchify_rgbpc(self, rgbpc):
+        bz = rgbpc.size(0)
+        
+        pcd = rgbpc[:,:,:3]
+        rgb = rgbpc[:,:,3:]
+        
+        # Voxelize point cloud and patchify. 
+        voxel_grid = self.voxelizer.coords_to_bounding_voxel_grid(
+            pcd, coord_features=rgb, coord_bounds=self.bounds)
+        voxel_grid = voxel_grid.permute(0, 4, 1, 2, 3).detach()
+        
+        d0 = self.input_preprocess(voxel_grid)
+        ins = self.patchify(d0)
+        
+        return rearrange(ins, 'b d ... -> b (...) d')
+
     def forward(self, batch):
         
         # Unpack features.  
@@ -579,17 +685,10 @@ class TransformerClassifier(LightningModule):
                     obj2_n_feats = rearrange(obj2_n_feats, 'b d ... -> b (...) d')
                 
                 elif self.cfg['data']['use_rgb_pc']:
-                    bz = obj1_n_feats.size(0)
+
+                    obj1_n_feats = self.patchify_rgbpc(obj1_n_feats)
+                    obj2_n_feats = self.patchify_rgbpc(obj2_n_feats)
                     
-                    pcd = obj1_n_feats[:,:,:3]
-                    rgb = obj1_n_feats[:,:,3:]
-                    
-                    voxel_grid = self.voxelizer.coords_to_bounding_voxel_grid(
-                        pcd, coord_features=rgb, coord_bounds=self.bounds)
-                    
-                    pdb.set_trace()
-                    # TODO Do Peract preprocessing step and connect to perceiver.
-                
             # Otherwise extract them. 
             else: 
                 vgg16_feats1, vgg16_feats2 = vgg16_feats
@@ -651,11 +750,17 @@ class TransformerClassifier(LightningModule):
 
             # Project onto shared embedding space. 
             lang_enc = self.lang_fc(lang_feat)
-            obj1_enc = self.obj_fc(obj1_n_feats)
-            obj2_enc = self.obj_fc(obj2_n_feats)
+            
+            if self.cfg['data']['use_rgb_pc']:
+                obj1_enc = obj1_n_feats
+                obj2_enc = obj2_n_feats
+            else: 
+                obj1_enc = self.obj_fc(obj1_n_feats)
+                obj2_enc = self.obj_fc(obj2_n_feats)
+            
 
             # Perceiver pass for explicit voxels. 
-            if self.cfg['data']['use_explicit_voxels']:
+            if self.use_peract:
                 
                 # Repeat latents to batch size. 
                 latents = repeat(self.latents, 'n d -> b n d', b=obj1_enc.size(0))
