@@ -839,8 +839,8 @@ class TransformerClassifier(LightningModule):
             """
             MLP with visiolinguistic stream.  
             """
-            feats1 = self.mlp(torch.cat([vl1_feats, obj1_enc], dim=-1))
-            feats2 = self.mlp(torch.cat([vl2_feats, obj2_enc], dim=-1))
+            feats1 = self.mlp(torch.cat([vl1_feats * 0.0, obj1_enc], dim=-1))
+            feats2 = self.mlp(torch.cat([vl2_feats * 0.0, obj2_enc], dim=-1))
 
             """
             """

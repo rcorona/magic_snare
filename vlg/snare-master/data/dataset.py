@@ -12,7 +12,6 @@ import numpy as np
 import gzip
 import json
 import pdb
-import tqdm
 from einops import rearrange
 import pickle
 from tqdm import tqdm
@@ -500,7 +499,7 @@ class CLIPGraspingDataset(torch.utils.data.Dataset):
         bz = 8
         dataloader = torch.utils.data.DataLoader(obj_dataset, batch_size=bz, num_workers=32)
 
-        for b_idx, batch in enumerate(tqdm.tqdm(dataloader)): 
+        for b_idx, batch in enumerate(tqdm(dataloader)): 
             
             # Get backbone features and prep for input to LegoFormer view embedder (which we'll finetune). 
             imgs = batch['images']
@@ -528,6 +527,10 @@ class CLIPGraspingDataset(torch.utils.data.Dataset):
                 np.save(npy_path, feats) 
 
     def preprocess_vgg16(self, legoformer_model): 
+
+        # Don't need features if using voxels. 
+        if self.cfg['data']['use_explicit_voxels'] or self.cfg['data']['use_rgb_pc']:
+            return
 
         # First make set of all objects that don't yet have a feature matrix. 
         missing_objs = set()
@@ -591,7 +594,7 @@ class CLIPGraspingDataset(torch.utils.data.Dataset):
             vgg16.classifier = vgg16.classifier[:-1]         
             vgg16.cuda()
 
-        for b_idx, batch in enumerate(tqdm.tqdm(dataloader)): 
+        for b_idx, batch in enumerate(tqdm(dataloader)): 
             
             # Get backbone features and prep for input to LegoFormer view embedder (which we'll finetune). 
             imgs = batch['images']
@@ -888,11 +891,14 @@ class CLIPGraspingDataset(torch.utils.data.Dataset):
         # test set does not have labels for visual and non-visual categories
         feats['is_visual'] = entry['visual'] if 'ans' in entry else -1
 
-        # Select view indexes randomly # TODO need to select them consistently for evaluation.
-        #view_idxs1 = np.random.choice(8, self.n_views, replace=False)
-        #view_idxs2 = np.random.choice(8, self.n_views, replace=False)
-        view_idxs1 = np.arange(self.n_views)
-        view_idxs2 = np.arange(self.n_views)
+        # Don't need to be random if we have all views. 
+        if self.n_views == 8: 
+            view_idxs1 = np.arange(self.n_views)
+            view_idxs2 = np.arange(self.n_views)
+        else: 
+            # Select view indexes randomly # TODO need to select them consistently for evaluation.
+            view_idxs1 = np.random.choice(8, self.n_views, replace=False)
+            view_idxs2 = np.random.choice(8, self.n_views, replace=False)
         
         ## Img feats
         # For CLIP filter to use only desired amount of views (in this case 8). 
