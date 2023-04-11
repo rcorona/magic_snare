@@ -109,15 +109,16 @@ def aggregate_results(args):
     for cfg_name in args.config_names: 
         
         # Name for experiment folder. 
-        name = cfg_name.split('/')[-1].split('.')[0]
+        name = cfg_name.split('/')[-1]
         exp_dir = 'snap/{}'.format(name)
         
         # Seed directories. 
-        seed_dirs = os.listdir(exp_dir)
+        seed_nums = list(range(10))
         results = {}
     
-        for seed_dir in seed_dirs: 
-            results_path = os.path.join(exp_dir, seed_dir, 'checkpoints', 'vl-results-.json')
+        for nums in seed_nums: 
+            print(nums)
+            results_path = os.path.join(exp_dir, 'checkpoints', 'vl-results-{}.json'.format(nums))
             
             # Read results. 
             result_lines = [r for r in open(results_path, 'r')]

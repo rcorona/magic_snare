@@ -529,7 +529,7 @@ class CLIPGraspingDataset(torch.utils.data.Dataset):
     def preprocess_vgg16(self, legoformer_model): 
 
         # Don't need features if using voxels. 
-        if self.cfg['data']['use_explicit_voxels'] or self.cfg['data']['use_rgb_pc']:
+        if self.cfg['data']['use_explicit_voxels'] or self.cfg['data']['use_rgb_pc'] or  self.cfg['data']['use_pointe_hidden']:
             return
 
         # First make set of all objects that don't yet have a feature matrix. 
@@ -750,6 +750,18 @@ class CLIPGraspingDataset(torch.utils.data.Dataset):
 
         return np.load(file_path)
 
+    def get_pointe_feats(self, obj):
+        # feats = []
+        # for i in range(8):
+        #     feat = np.load(os.path.join(self.cfg['data']['pointe_feats'], '{}/{}-{}_hidden.npy'.format(obj, obj, i)))
+        #     feats.append(feat)
+
+        # return np.stack(feats)
+        # feat = np.load(os.path.join(self.cfg['data']['pointe_feats'], '{}/{}_all_hidden.npy'.format(obj, obj)))
+        feat = np.load(os.path.join(self.cfg['data']['pointe_feats'], '{}/{}_pooled_hidden.npy'.format(obj, obj)))
+
+        return feat
+
     def get_imgs(self, key): 
         
         # Object images path. 
@@ -924,10 +936,18 @@ class CLIPGraspingDataset(torch.utils.data.Dataset):
 
             feats['obj_feats'] = (obj1_n_feats, obj2_n_feats)
 
+        elif self.feats_backbone == 'pointe':
+            # ab673912c47afe0afb8c9814b98c66d7-0_hidden.npy
+            obj1_n_feats = self.get_pointe_feats(key1)
+            obj2_n_feats = self.get_pointe_feats(key2)
+
+            feats['obj_feats'] = (obj1_n_feats, obj2_n_feats)
         # Tokenize annotation if using a transformer.
         use_lang_toks = self.cfg['train']['model'] == 'transformer' or \
                 self.cfg['train']['model'] == 'pixelnerf' or \
-                self.cfg['train']['model'] == 'lfn'
+                self.cfg['train']['model'] == 'lfn' or \
+                self.cfg['train']['model'] == 'pointe'
+
 
         if use_lang_toks:
             feats['lang_tokens'] = clip.tokenize(feats['annotation'])
@@ -1044,5 +1064,20 @@ class CLIPGraspingDataset(torch.utils.data.Dataset):
             obj2_feats = np.expand_dims(np.load(feat2_path), axis=0)
 
             feats['obj_feats'] = (obj1_feats, obj2_feats)
+
+        # with fifty percept probability, flip feats around
+        if (torch.rand(1) > 0.5).item() and self.mode == 'train':
+            feats['obj_feats'] = (feats['obj_feats'][1], feats['obj_feats'][0])
+
+            
+            feats['img_feats'] = (feats['img_feats'][1], feats['img_feats'][0])
+
+
+            # label
+            feats['ans'] = 1 - feats['ans'] # not it
+        
+            # Keys
+            feats['keys'] = (feats['keys'][1], feats['keys'][0])
+
 
         return feats

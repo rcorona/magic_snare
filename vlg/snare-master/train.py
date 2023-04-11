@@ -41,7 +41,7 @@ def main(cfg):
     data_module = None
     camera_params = None
 
-    if cfg['train']['model'] == 'transformer':
+    if cfg['train']['feats_backbone'] == 'legoformer':
         legoformer_class = LegoFormerM
         cfg_path = os.path.join(cfg['legoformer_paths']['cfg'], 'legoformer_m.yaml')
         net_type = 'legoformer_m'

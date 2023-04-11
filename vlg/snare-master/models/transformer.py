@@ -25,6 +25,8 @@ from legoformer.model.transformer import Encoder
 from legoformer.util.metrics import calculate_iou, calculate_fscore
 from data.peract_voxelizer import VoxelGrid
 
+from models.map import MAPBlock
+
 ## From https://github.com/peract/peract/blob/main/agents/peract_bc/perceiver_lang_io.py
 LRELU_SLOPE = 0.02
 
@@ -247,8 +249,8 @@ class TransformerClassifier(LightningModule):
             self.feat_dim = 64
 
         # Use perceiver for explicit voxel maps provide directly or through point clouds. 
-        self.use_peract = self.cfg['data']['use_explicit_voxels'] or self.cfg['data']['use_rgb_pc']
-
+        self.use_peract = self.cfg['data']['use_explicit_voxels'] or self.cfg['data']['use_rgb_pc'] or self.cfg['data']['use_pointe_hidden']
+        self.use_peract = self.use_peract and self.cfg['data']['use_peract']
         # For RGB point clouds. 
         if self.cfg['data']['use_rgb_pc']:
             
@@ -283,6 +285,19 @@ class TransformerClassifier(LightningModule):
                 nn.Dropout(p=0.3)
             )
             
+        # let this be the default
+        self.pos_encoding = nn.Parameter(torch.randn(1,
+                                                    100 + 16,
+                                                    self.feat_dim))
+        self.lang_pos_encoding = nn.Parameter(torch.randn(1,
+                                                    100,
+                                                    self.feat_dim))
+        self.embed_token_type = nn.Embedding(3, self.feat_dim)
+
+        if self.cfg['train']['pooling'] == 'map':
+            print('created map pooling')
+            self.map_pooling = MAPBlock(1, 256, 8)
+
         if self.use_peract:
             
             # Perceiver parameters. 
@@ -301,17 +316,34 @@ class TransformerClassifier(LightningModule):
 
             if self.cfg['data']['use_explicit_voxels']:
                 spatial_size = 6
+                # Learned positional encodings for perceiver. 
+                self.pos_encoding = nn.Parameter(torch.randn(1,
+                                                            lang_max_seq_len + spatial_size ** 3 + 8,
+                                                            input_dim_before_seq))
             elif self.cfg['data']['use_rgb_pc']:
                 spatial_size = 20
-        
+                # Learned positional encodings for perceiver. 
+                self.pos_encoding = nn.Parameter(torch.randn(1,
+                                                            lang_max_seq_len + spatial_size ** 3 + 8,
+                                                            input_dim_before_seq))
+            elif self.cfg['data']['use_pointe_hidden']:
+                spatial_size = 16 # not sure what to set this as?
+                    # Learned positional encodings for perceiver. 
+                self.pos_encoding = nn.Parameter(torch.randn(1,
+                                                            lang_max_seq_len + spatial_size,
+                                                            input_dim_before_seq))
+    
             # Perciever latents. 
             n_latents = self.cfg['transformer']['n_latents']
             self.latents = nn.Parameter(torch.randn(n_latents, input_dim_before_seq))
 
-            # Learned positional encodings for perceiver. 
-            self.pos_encoding = nn.Parameter(torch.randn(1,
-                                                         lang_max_seq_len + spatial_size ** 3 + 8,
-                                                         input_dim_before_seq))
+            # # Learned positional encodings for perceiver. 
+            # self.pos_encoding = nn.Parameter(torch.randn(1,
+            #                                              lang_max_seq_len + spatial_size ** 3 + 8,
+            #                                              input_dim_before_seq))
+
+
+
             
             # Perceiver. 
             self.cross_attend_blocks = nn.ModuleList([
@@ -360,6 +392,9 @@ class TransformerClassifier(LightningModule):
 
         elif self.feats_backbone == 'pix2vox': 
             self.obj_feat_dim = 8192
+
+        elif self.feats_backbone == 'pointe': 
+            self.obj_feat_dim = 512
 
         # Bypass this in case we want to directly use VGG16 embeddings. 
         if self.cfg['transformer']['skip_legoformer']:            
@@ -467,10 +502,14 @@ class TransformerClassifier(LightningModule):
         #self.cls_token = nn.Parameter(torch.normal(0.0, 1.0, (1, self.feat_dim)))
         self.cls_token = nn.Parameter(torch.normal(0.0, 1.0, (1, self.feat_dim)))
 
+        self.obj1_token = nn.Parameter(torch.normal(0.0, 1.0, (1, self.feat_dim)))
+        self.obj2_token = nn.Parameter(torch.normal(0.0, 1.0, (1, self.feat_dim)))
+
+
         ## TODO remove
         self.transformer_mlp = nn.Sequential(nn.Linear(512 * 4, 512), nn.ReLU())
-        self.obj1_token = torch.normal(0.0, 1.0, (1, self.feat_dim)).to('cuda')
-        self.obj2_token = torch.normal(0.0, 1.0, (1, self.feat_dim)).to('cuda')
+        # self.obj1_token = torch.normal(0.0, 1.0, (1, self.feat_dim)).to('cuda')
+        # self.obj2_token = torch.normal(0.0, 1.0, (1, self.feat_dim)).to('cuda')
        
         # Vision & Language stream. 
         self.vl_mlp = nn.Sequential(
@@ -500,6 +539,8 @@ class TransformerClassifier(LightningModule):
             nn.Linear(self.feat_dim // 2, 1)
         )
 
+        
+
     def configure_optimizers(self):
         params_to_optimize = [p for p in self.parameters() if p.requires_grad]
         # TODO wd = 1e-3, 1e-4, 0.01, 0.05
@@ -517,10 +558,16 @@ class TransformerClassifier(LightningModule):
         def linear_warmup(step): 
             return min(step / self.cfg['transformer']['warmup_steps'], 1.0)
 
+        import transformers
+        # scheduler = transformers.get_cosine_schedule_with_warmup(self.optimizer, 2000, 75*600)
+
+        # scheduler = transformers.get_cosine_with_hard_restarts_schedule_with_warmup(self.optimizer, 2000, 75*600, 6)
+
         scheduler = torch.optim.lr_scheduler.LambdaLR(self.optimizer, linear_warmup)
         scheduler_cfg = {
                 'scheduler': scheduler, 
                 'interval': 'step', 
+                # 'interval': 'epoch',
                 'frequency': 1
         }
 
@@ -542,7 +589,7 @@ class TransformerClassifier(LightningModule):
 
         ce_loss = self.smoothed_cross_entropy(probs, labels)
 
-        return_dict = {'ce_loss': ce_loss}
+        return_dict = {'ce_loss': ce_loss, 'contrastive_loss': out['contrastive_loss']}
 
         # Additionally use volumetric reconstruction loss. 
         if self.cfg['train']['reconstruction_loss']:
@@ -564,10 +611,10 @@ class TransformerClassifier(LightningModule):
             lmbda = int(self.cfg['train']['loss_lambda'])
             loss = lmbda * ce_loss + (1.0 - lmbda) * reconstruction_loss
 
-            return_dict['loss'] = loss
+            return_dict['loss'] = loss + out['contrastive_loss']
             return_dict['reconstruction_loss']: reconstruction_loss
         else: 
-            return_dict['loss'] = ce_loss
+            return_dict['loss'] = ce_loss + out['contrastive_loss']
 
         return return_dict
 
@@ -624,7 +671,7 @@ class TransformerClassifier(LightningModule):
         
         return rearrange(ins, 'b d ... -> b (...) d')
 
-    def forward(self, batch):
+    def forward(self, batch, mode=None):
         
         # Unpack features.  
         img_feats = batch['img_feats'] if 'img_feats' in batch else None        
@@ -639,6 +686,9 @@ class TransformerClassifier(LightningModule):
         (key1, key2) =  batch['keys']
         annotation = batch['annotation']
         is_visual = batch['is_visual']
+
+
+        contrastive_loss = 0
 
         # TODO do we want to feed all of these into transformer, or just the aggregate? 
         # Load, aggregate, and process img features. 
@@ -704,7 +754,8 @@ class TransformerClassifier(LightningModule):
                         obj1_n_feats = obj1_n_feats.unsqueeze(1)
                         obj2_n_feats = obj2_n_feats.unsqueeze(1)
 
-        elif self.cfg['train']['feats_backbone'] == 'pix2vox' or self.cfg['train']['feats_backbone'] == '3d-r2n2': 
+        elif self.cfg['train']['feats_backbone'] == 'pix2vox' or self.cfg['train']['feats_backbone'] == '3d-r2n2' \
+                or self.cfg['train']['feats_backbone'] == 'pointe': 
             # Pre-extracted features
             obj1_n_feats, obj2_n_feats = obj_feats
 
@@ -717,10 +768,11 @@ class TransformerClassifier(LightningModule):
         lang_feat = self.clip.ln_final(lang_feat)
 
         # lang encoding with clip. # TODO Why doesn't CLIP mask zero-tokens? 
+        # Aggregate CLIP langauge. 
+        agg_lang_feat = lang_feat[torch.arange(lang_feat.shape[0]), lang_tokens.squeeze().argmax(dim=-1)] @ self.clip.text_projection
+
         if not self.cfg['transformer']['skip_clip']:
             
-            # Aggregate CLIP langauge. 
-            agg_lang_feat = lang_feat[torch.arange(lang_feat.shape[0]), lang_tokens.squeeze().argmax(dim=-1)] @ self.clip.text_projection
 
             """
             Separate stream v&l. 
@@ -748,6 +800,24 @@ class TransformerClassifier(LightningModule):
             if self.cfg['data']['use_rgb_pc']:
                 obj1_enc = obj1_n_feats
                 obj2_enc = obj2_n_feats
+            if self.cfg['data']['use_pointe_hidden']:
+                # import pdb; pdb.set_trace()
+                # method 1. maxpool the 3072 tokens away!
+                # obj1_enc = obj1_n_feats.max(-2)[0]
+                # obj2_enc = obj2_n_feats.max(-2)[0]
+                obj1_enc = obj1_n_feats
+                obj2_enc = obj2_n_feats
+                obj1_enc = self.obj_fc(obj1_enc)
+                obj2_enc = self.obj_fc(obj2_enc)
+                # method 2. flatten it and have a large number of tokens
+                # actually no because for 8 dims, that
+                # method 3. maxpool so that we have 3072 tokens instead
+                # obj1_enc = obj1_n_feats.max(-3)[0]
+                # obj2_enc = obj2_n_feats.max(-3)[0]
+                # obj1_enc = self.obj_fc(obj1_enc)
+                # obj2_enc = self.obj_fc(obj2_enc)
+                obj1_reconstruction, obj2_reconstruction = None, None
+
             else: 
                 obj1_enc = self.obj_fc(obj1_n_feats)
                 obj2_enc = self.obj_fc(obj2_n_feats)
@@ -765,53 +835,254 @@ class TransformerClassifier(LightningModule):
                 img2_feats = self.img_fc(img2_n_feats)
             
                 # Positional encoding and input prep. 
-                obj1_in = torch.cat([obj1_enc, img1_feats, lang_enc], dim=1)
-                obj2_in = torch.cat([obj2_enc, img2_feats, lang_enc], dim=1)
-                
-                obj1_in = self.pos_encoding[:,:obj1_in.size(1),:] + obj1_in
-                obj2_in = self.pos_encoding[:,:obj2_in.size(1),:] + obj2_in
-                
-                # Perceiver pass per object. 
-                obj1_latents = cross_attn(latents, context=obj1_in, mask=None) + latents
-                obj2_latents = cross_attn(latents, context=obj2_in, mask=None) + latents
-                
-                obj1_latents = cross_ff(obj1_latents) + obj1_latents
-                obj2_latents = cross_ff(obj2_latents) + obj2_latents
-                
-                for self_attn, self_ff in self.layers: 
-                    obj1_latents = self_attn(obj1_latents) + obj1_latents
-                    obj2_latents = self_attn(obj2_latents) + obj2_latents
+                lang_token_embed = self.embed_token_type(torch.zeros(lang_enc.shape[:2]).long().to(lang_enc.device))
+                img_token_embed = self.embed_token_type(torch.ones(img1_feats.shape[:2]).long().to(img1_feats.device))
+                obj_token_embed = self.embed_token_type(2*torch.ones(obj1_enc.shape[:2]).long().to(obj1_enc.device))
+
+                # pragmatic using peract
+                if self.cfg['train']['pragmatic']:
+
+                    # normalize data
+                    # img1_feats = img1_feats / img1_feats.norm(dim=-1, keepdim=True)
+                    # img2_feats = img2_feats / img2_feats.norm(dim=-1, keepdim=True)
+                    # obj1_enc = obj1_enc / obj1_enc.norm(dim=-1, keepdim=True)
+                    # obj2_enc = obj2_enc / obj2_enc.norm(dim=-1, keepdim=True)
+                    # lang_enc = lang_enc / lang_enc.norm(dim=-1, keepdim=True)
+
+
+                    # START: contrastive loss
+                    # using clip-like contrastive loss
+                    correct_img_encodings = torch.concat( [img1_feats[ans.bool()], img2_feats[~ans.bool()]])
+                    correct_obj_encodings = torch.concat( [obj1_enc[ans.bool()], obj2_enc[~ans.bool()]])
+                    agg_lang = self.lang_fc(agg_lang_feat.float())
+
+                    texts_similarity = agg_lang @ agg_lang.T
+
+                    contrastive_loss = 0
+                    for idx in range(8):
+                        logits = (agg_lang @ correct_img_encodings[:,idx].T) / 1.0
+                        images_similarity = correct_img_encodings[:,idx] @ correct_img_encodings[:,idx].T
+                        targets = F.softmax((images_similarity + texts_similarity) / 2 * 1, dim=-1)
+                        texts_loss = cross_entropy(logits, targets, reduction='none').mean()
+                        images_loss = cross_entropy(logits.T, targets.T, reduction='none').mean()
+                        contrastive_loss +=  (images_loss + texts_loss) / 2.0 
+
+                    for idx in range(8):
+                        logits = (agg_lang @ correct_obj_encodings[:,idx].T) / 1.0
+                        obj_similarity = correct_obj_encodings[:,idx] @ correct_obj_encodings[:,idx].T
+                        targets = F.softmax((obj_similarity + texts_similarity) / 2 * 1, dim=-1)
+                        texts_loss = cross_entropy(logits, targets, reduction='none').mean()
+                        obj_loss = cross_entropy(logits.T, targets.T, reduction='none').mean()
+                        contrastive_loss +=  (images_loss + obj_loss) / 2.0 
+
+                    # DONE: contrastive loss
+
+
+                    obj1_in = torch.cat([obj1_enc+obj_token_embed, img1_feats+img_token_embed], dim=1)
+                    obj2_in = torch.cat([obj2_enc+obj_token_embed, img2_feats+img_token_embed, lang_enc+lang_token_embed], dim=1)
                     
-                    obj1_latents = self_ff(obj1_latents) + obj1_latents
-                    obj2_latents = self_ff(obj2_latents) + obj2_latents
-                
-                # Decoder attention for CLS token. 
-                cls = repeat(self.cls_token, '1 d -> b 1 d', b=obj1_latents.size(0))
-                
-                feats1 = self.decoder_cross_attn(cls, context=obj1_latents).squeeze()
-                feats2 = self.decoder_cross_attn(cls, context=obj2_latents).squeeze()
-                
-                # Dummy return value. 
-                lang_mask = None
+                    obj1_in = self.pos_encoding[:,:obj1_in.size(1),:] + obj1_in
+                    obj2_in = self.pos_encoding[:,:obj2_in.size(1),:] + obj2_in
+
+                    # latents = torch.cat([latents,latents], dim=1)
+                    obj_in = torch.cat([obj1_in, obj2_in], dim=1)
+
+                    # Perceiver pass per object. 
+                    obj_latents = cross_attn(latents, context=obj_in, mask=None) + latents
+                    
+                    obj_latents = cross_ff(obj_latents) + obj_latents
+                    
+                    for self_attn, self_ff in self.layers: 
+                        obj_latents = self_attn(obj_latents) + obj_latents
+                        
+                        obj_latents = self_ff(obj_latents) + obj_latents
+                    
+                    # Decoder attention for CLS token. 
+                    cls = repeat(self.cls_token, '1 d -> b 1 d', b=obj_latents.size(0))
+
+                    obj1_token = repeat(self.obj1_token, '1 d -> b 1 d', b=obj_latents.size(0))
+                    obj2_token = repeat(self.obj2_token, '1 d -> b 1 d', b=obj_latents.size(0))
+                    
+                    # feats = self.decoder_cross_attn(cls, context=obj_latents).squeeze()
+                    feats1 = self.decoder_cross_attn(obj1_token, context=obj_latents).squeeze()
+                    feats2 = self.decoder_cross_attn(obj2_token, context=obj_latents).squeeze()
+
+                    # import pdb; pdb.set_trace()
+                    # let's see if we can do something interesting here with feature aggregation!
+                    
+                    # Dummy return value. 
+                    lang_mask = None
+
+                else:
+
+
+                    obj1_in = torch.cat([obj1_enc+obj_token_embed, img1_feats+img_token_embed, lang_enc+lang_token_embed], dim=1)
+                    obj2_in = torch.cat([obj2_enc+obj_token_embed, img2_feats+img_token_embed, lang_enc+lang_token_embed], dim=1)
+                    
+                    obj1_in = self.pos_encoding[:,:obj1_in.size(1),:] + obj1_in
+                    obj2_in = self.pos_encoding[:,:obj2_in.size(1),:] + obj2_in
+
+                    # Perceiver pass per object. 
+                    obj1_latents = cross_attn(latents, context=obj1_in, mask=None) + latents
+                    obj2_latents = cross_attn(latents, context=obj2_in, mask=None) + latents
+                    
+                    obj1_latents = cross_ff(obj1_latents) + obj1_latents
+                    obj2_latents = cross_ff(obj2_latents) + obj2_latents
+                    
+                    for self_attn, self_ff in self.layers: 
+                        obj1_latents = self_attn(obj1_latents) + obj1_latents
+                        obj2_latents = self_attn(obj2_latents) + obj2_latents
+                        
+                        obj1_latents = self_ff(obj1_latents) + obj1_latents
+                        obj2_latents = self_ff(obj2_latents) + obj2_latents
+                    
+                    # Decoder attention for CLS token. 
+                    cls = repeat(self.cls_token, '1 d -> b 1 d', b=obj1_latents.size(0))
+                    
+                    feats1 = self.decoder_cross_attn(cls, context=obj1_latents).squeeze()
+                    feats2 = self.decoder_cross_attn(cls, context=obj2_latents).squeeze()
+                    
+                    # Dummy return value. 
+                    lang_mask = None
                 
             else: 
 
-                # Concatenate tokens for transformer. 
-                bz = lang_feat.size(0)
-                cls_token = self.cls_token.unsqueeze(0).expand(bz, 1, -1)
+                # pragmatics for regular transformer
+                if self.cfg['train']['pragmatic']:
 
-                # Compute masks for transformer. 
-                cls_mask = torch.full((bz, 1), False).to('cuda')
-                lang_mask = (lang_tokens == 0.0).to('cuda')
-                obj_mask = torch.full((bz, obj1_enc.size(1)), False).to('cuda')
-                padding_mask = torch.cat([lang_mask, obj_mask, cls_mask], dim=1).to('cuda')
 
-                # Pass tokens through transformer itself. 
-                feats1 = torch.cat([lang_enc, obj1_enc, cls_token], dim=1)
-                feats2 = torch.cat([lang_enc, obj2_enc, cls_token], dim=1)
+                    # put images through fc layer
+                    img1_feats = self.img_fc(img1_n_feats)
+                    img2_feats = self.img_fc(img2_n_feats)
 
-                feats1 = self.transformer_pass(feats1, padding_mask, max_length)
-                feats2 = self.transformer_pass(feats2, padding_mask, max_length)
+
+                    # # START: contrastive loss
+
+                    # correct_img_encodings = torch.concat( [img1_feats[ans.bool()], img2_feats[~ans.bool()]])
+                    # correct_obj_encodings = torch.concat( [obj1_enc[ans.bool()], obj2_enc[~ans.bool()]])
+
+                    # # using clip-like contrastive loss
+                    # agg_lang = self.lang_fc(agg_lang_feat.float())
+
+                    # texts_similarity = agg_lang @ agg_lang.T
+
+                    # contrastive_loss = 0
+                    # for idx in range(8):
+                    #     logits = (agg_lang @ correct_img_encodings[:,idx].T) / 1.0
+                    #     images_similarity = correct_img_encodings[:,idx] @ correct_img_encodings[:,idx].T
+                    #     targets = F.softmax((images_similarity + texts_similarity) / 2 * 1, dim=-1)
+                    #     texts_loss = cross_entropy(logits, targets, reduction='none').mean()
+                    #     images_loss = cross_entropy(logits.T, targets.T, reduction='none').mean()
+                    #     contrastive_loss +=  (images_loss + texts_loss) / 2.0 
+
+                    # for idx in range(8):
+                    #     logits = (agg_lang @ correct_obj_encodings[:,idx].T) / 1.0
+                    #     obj_similarity = correct_obj_encodings[:,idx] @ correct_obj_encodings[:,idx].T
+                    #     targets = F.softmax((obj_similarity + texts_similarity) / 2 * 1, dim=-1)
+                    #     texts_loss = cross_entropy(logits, targets, reduction='none').mean()
+                    #     obj_loss = cross_entropy(logits.T, targets.T, reduction='none').mean()
+                    #     contrastive_loss +=  (images_loss + obj_loss) / 2.0 
+
+                    # # DONE: contrastive loss
+
+                    # add token embeddings
+                    lang_token_embed = self.embed_token_type(torch.zeros(lang_enc.shape[:2]).long().to(lang_enc.device))
+                    img_token_embed = self.embed_token_type(torch.ones(img1_feats.shape[:2]).long().to(img1_feats.device))
+                    obj_token_embed = self.embed_token_type(2*torch.ones(obj1_enc.shape[:2]).long().to(obj1_enc.device))
+                    
+                    # concatenate object and image tokens. add language to the end
+                    obj1_in = torch.cat([obj1_enc+obj_token_embed, img1_feats+img_token_embed], dim=1)
+                    obj2_in = torch.cat([obj2_enc+obj_token_embed, img2_feats+img_token_embed, lang_enc+lang_token_embed], dim=1)
+                    
+                    # pos encoding 0:16 is only for object/img features
+                    # pos encoding 16: is for language tokens!
+
+
+                    # temporarily commented out!
+                    obj1_in = self.pos_encoding[:,:obj1_in.size(1),:] + obj1_in
+                    obj2_in = self.pos_encoding[:,:obj2_in.size(1),:] + obj2_in
+
+
+                    # put it into one big input
+                    obj_in = torch.cat([obj1_in, obj2_in], dim=1)
+
+                    # Concatenate tokens for transformer. 
+                    bz = lang_feat.size(0)
+                    # cls_token = self.cls_token.unsqueeze(0).expand(bz, 1, -1)
+
+                    # Compute masks for transformer. 
+
+                    # the input is 
+
+                    lang_mask = (lang_tokens == 0.0).to('cuda')
+                    padding_mask = torch.full((bz, obj_in.size(1)), False).to('cuda')
+                    padding_mask[:,-lang_mask.shape[1]:] = lang_mask
+
+                    if mode == 'train':
+                        if self.cfg['train']['view_masking'] > 0:
+                            # add view masking
+                            obj1_mask = torch.rand((len(padding_mask),8)) < self.cfg['train']['view_masking']
+                            obj2_mask = torch.rand((len(padding_mask),8)) < self.cfg['train']['view_masking']
+
+                            # padding mask is 8 obj feats, 8 img feats
+                            # then 8 obj feats, then 8 img feats, them language tokens!
+                            padding_mask[:,:8] = obj1_mask
+                            padding_mask[:,8:16] = obj1_mask
+                            padding_mask[:,16:24] = obj2_mask
+                            padding_mask[:,24:32] = obj2_mask
+
+                            # do i also need to zero out the inputs? i will just in case
+                            obj_in[:,:8][obj1_mask == True] = 0
+                            obj_in[:,8:16][obj1_mask == True] = 0
+                            obj_in[:,16:24][obj2_mask == True] = 0
+                            obj_in[:,24:32][obj2_mask == True] = 0
+
+                        if self.cfg['train']['lang_masking'] > 0:
+                            lang_mask = torch.rand(lang_feat.shape[:2]) < self.cfg['train']['lang_masking']
+                            lang_mask_expanded = lang_mask.unsqueeze(-1).expand_as(lang_feat).to(lang_feat.device)
+                            masked_feat = lang_feat.masked_fill(lang_mask_expanded, 0)  # replace masked values with 0
+                            padding_mask[:,32:] = lang_mask
+
+
+
+                    # run forward pass
+                    feats = self.transformer(obj_in.permute(1, 0, 2), padding_mask)
+                    feats = feats.permute(1, 0, 2)
+
+                    # use maxpooling to get features for each object
+                    # idea: potentially use language tokens in the max pool as well!
+                    feats1 = feats[:,:16]
+                    feats2 = feats[:,16:32]
+                    last_lang_feats = feats[:,32:]
+                    if self.cfg['train']['pooling'] == 'map':
+                        feats1 = self.map_pooling(feats1)
+                        feats2 = self.map_pooling(feats2)
+                    elif self.cfg['train']['pooling'] == 'max':
+                        feats1 = feats1.max(1)[0]
+                        feats2 = feats2.max(1)[0]
+                    elif self.cfg['train']['pooling'] == 'mean':
+                        feats1 = feats1.mean(1)
+                        feats2 = feats2.mean(1)
+                # regular transformer but only scoring separately
+                else:
+
+
+                    # Concatenate tokens for transformer. 
+                    bz = lang_feat.size(0)
+                    cls_token = self.cls_token.unsqueeze(0).expand(bz, 1, -1)
+
+                    # Compute masks for transformer. 
+                    cls_mask = torch.full((bz, 1), False).to('cuda')
+                    lang_mask = (lang_tokens == 0.0).to('cuda')
+                    obj_mask = torch.full((bz, obj1_enc.size(1)), False).to('cuda')
+                    padding_mask = torch.cat([lang_mask, obj_mask, cls_mask], dim=1).to('cuda')
+
+                    # Pass tokens through transformer itself. 
+                    feats1 = torch.cat([lang_enc, obj1_enc, cls_token], dim=1)
+                    feats2 = torch.cat([lang_enc, obj2_enc, cls_token], dim=1)
+
+                    feats1 = self.transformer_pass(feats1, padding_mask, max_length)
+                    feats2 = self.transformer_pass(feats2, padding_mask, max_length)
             
             if not self.cfg['transformer']['skip_clip']:
                 """
@@ -869,7 +1140,8 @@ class TransformerClassifier(LightningModule):
             'gt_voxels': voxel_maps,
             'voxel_masks': voxel_masks, 
             'annotation': annotation,
-            'lang_mask': lang_mask
+            'lang_mask': lang_mask,
+            'contrastive_loss': contrastive_loss
         }
 
         if ans[0] > -1: 
@@ -1051,7 +1323,7 @@ class TransformerClassifier(LightningModule):
 
 
     def training_step(self, batch, batch_idx):
-        out = self.forward(batch)
+        out = self.forward(batch, mode='train')
 
         # classifier loss
         losses = self._criterion(out)
@@ -1570,3 +1842,12 @@ class TransformerClassifier(LightningModule):
             with open(json_file, 'w') as f:
 
                 json.dump(test_results, f, sort_keys=True, indent=4)
+
+                
+def cross_entropy(preds, targets, reduction='none'):
+    log_softmax = nn.LogSoftmax(dim=-1)
+    loss = (-targets * log_softmax(preds)).sum(1)
+    if reduction == "none":
+        return loss
+    elif reduction == "mean":
+        return loss.mean()

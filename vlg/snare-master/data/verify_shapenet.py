@@ -5,7 +5,7 @@ import pdb
 # Get all objects that exist in SNARE. 
 def get_snare_objs(split_sets=False): 
     
-    snare_path = '/home/rcorona/2022/lang_nerf/vlg/snare-master/amt/folds_adversarial'
+    snare_path = '/data/abrar/3dgrounding/snare/amt/folds_adversarial'
     train = json.load(open(os.path.join(snare_path, 'train.json')))
     val = json.load(open(os.path.join(snare_path, 'val.json')))
     test = json.load(open(os.path.join(snare_path, 'test.json')))

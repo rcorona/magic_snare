@@ -4,6 +4,7 @@ from models.rotator import Rotator
 from models.transformer import TransformerClassifier
 from models.pixelnerf import PixelNeRFClassifier
 from models.lfn import LFNClassifier
+from models.pointe_single import PointeClassifier
 
 names = {
     # classifiers
@@ -19,5 +20,6 @@ names = {
     # PixelNeRF
     'pixelnerf': PixelNeRFClassifier,
 
-    'lfn': LFNClassifier
+    'lfn': LFNClassifier,
+    'pointe': PointeClassifier
 }
