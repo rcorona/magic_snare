@@ -295,8 +295,7 @@ class TransformerClassifier(LightningModule):
         self.embed_token_type = nn.Embedding(3, self.feat_dim)
 
         if self.cfg['train']['pooling'] == 'map':
-            print('created map pooling')
-            self.map_pooling = MAPBlock(1, 256, 8)
+            self.map_pooling = MAPBlock(1, self.feat_dim, 8)
 
         if self.use_peract:
             
@@ -1032,16 +1031,17 @@ class TransformerClassifier(LightningModule):
                             padding_mask[:,24:32] = obj2_mask
 
                             # do i also need to zero out the inputs? i will just in case
-                            obj_in[:,:8][obj1_mask == True] = 0
-                            obj_in[:,8:16][obj1_mask == True] = 0
-                            obj_in[:,16:24][obj2_mask == True] = 0
-                            obj_in[:,24:32][obj2_mask == True] = 0
+                            # obj_in[:,:8][obj1_mask == True] = 0
+                            # obj_in[:,8:16][obj1_mask == True] = 0
+                            # obj_in[:,16:24][obj2_mask == True] = 0
+                            # obj_in[:,24:32][obj2_mask == True] = 0
 
                         if self.cfg['train']['lang_masking'] > 0:
                             lang_mask = torch.rand(lang_feat.shape[:2]) < self.cfg['train']['lang_masking']
-                            lang_mask_expanded = lang_mask.unsqueeze(-1).expand_as(lang_feat).to(lang_feat.device)
-                            masked_feat = lang_feat.masked_fill(lang_mask_expanded, 0)  # replace masked values with 0
+                            # lang_mask_expanded = lang_mask.unsqueeze(-1).expand_as(lang_enc).to(lang_enc.device)
+                            # masked_feat = lang_enc.masked_fill(lang_mask_expanded, 0)  # replace masked values with 0
                             padding_mask[:,32:] = lang_mask
+                            # obj_in[:,32:] = masked_feat
 
 
 
@@ -1061,6 +1061,17 @@ class TransformerClassifier(LightningModule):
                         feats1 = feats1.max(1)[0]
                         feats2 = feats2.max(1)[0]
                     elif self.cfg['train']['pooling'] == 'mean':
+                        feats1 = feats1.mean(1)
+                        feats2 = feats2.mean(1)
+                    elif self.cfg['train']['pooling'] == 'max_lang':
+                        # we add the language feats to it and max pool!
+                        feats1 = torch.cat([feats1, last_lang_feats], dim=1)
+                        feats2 = torch.cat([feats2, last_lang_feats], dim=1)
+                        feats1 = feats1.max(1)[0]
+                        feats2 = feats2.max(1)[0]
+                    elif self.cfg['train']['pooling'] == 'mean_lang':
+                        feats1 = torch.cat([feats1, last_lang_feats], dim=1)
+                        feats2 = torch.cat([feats2, last_lang_feats], dim=1)
                         feats1 = feats1.mean(1)
                         feats2 = feats2.mean(1)
                 # regular transformer but only scoring separately
