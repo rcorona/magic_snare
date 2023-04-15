@@ -55,6 +55,8 @@ class SingleClassifier(LightningModule):
 
         # results save path
         self.save_path = Path(os.getcwd())
+        print('Checkpoint path: {}'.format(self.save_path))
+
 
         # log with wandb
         self.log_data = self.cfg['train']['log']
@@ -79,15 +81,27 @@ class SingleClassifier(LightningModule):
         )
 
         # finetuning layers for classification
-        self.cls_fc = nn.Sequential(
-            nn.Linear(self.img_feat_dim+self.lang_feat_dim, 512),
-            nn.ReLU(True),
-            nn.Dropout(self.dropout),
-            nn.Linear(512, 256),
-            nn.ReLU(True),
-            nn.Dropout(self.dropout),
-            nn.Linear(256, 1),
-        )
+        if self.cfg['train']['pragmatic']:
+
+            self.cls_fc = nn.Sequential(
+                nn.Linear(self.img_feat_dim*2+self.lang_feat_dim, 512),
+                nn.ReLU(True),
+                nn.Dropout(self.dropout),
+                nn.Linear(512, 256),
+                nn.ReLU(True),
+                nn.Dropout(self.dropout),
+                nn.Linear(256, 1),
+            )
+        else:
+            self.cls_fc = nn.Sequential(
+                nn.Linear(self.img_feat_dim+self.lang_feat_dim, 512),
+                nn.ReLU(True),
+                nn.Dropout(self.dropout),
+                nn.Linear(512, 256),
+                nn.ReLU(True),
+                nn.Dropout(self.dropout),
+                nn.Linear(256, 1),
+            )
 
     def configure_optimizers(self):
         self.optimizer = torch.optim.Adam(self.parameters(), lr=self.cfg['train']['lr'])
@@ -294,10 +308,12 @@ class SingleClassifier(LightningModule):
         sanity_check = True
         
         # Consolidate all predictions. 
+        '''
         self.val_predictions['probs'] = np.concatenate(self.val_predictions['probs'], axis=0)
         self.val_predictions['labels'] = np.concatenate(self.val_predictions['labels'], axis=0)
         self.val_predictions['visual'] = np.concatenate(self.val_predictions['visual'], axis=0)
-
+        '''
+        
         res = {
             'val_loss': 0.0,
 
@@ -360,6 +376,7 @@ class SingleClassifier(LightningModule):
                     self.best_val_res = dict(res)
                     
                     # Store predictions. 
+                    '''
                     preds_path = os.path.join(self.save_path, 'val_preds.npz')
                     np.savez(
                         preds_path, 
@@ -367,6 +384,7 @@ class SingleClassifier(LightningModule):
                         labels=self.val_predictions['labels'],
                         visual=self.val_predictions['visual']
                     )
+                    '''
 
             # results to save
             results_dict = self.best_test_res if mode == 'test' else self.best_val_res

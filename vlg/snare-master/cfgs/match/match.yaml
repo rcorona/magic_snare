@@ -1,11 +1,11 @@
 hydra:
   run:
-    dir: ${root_dir}/${train.exps_folder}/${train.folder}
+    dir: /data/abrar/3dgrounding/pointe_snare/lang_nerf/vlg/snare-master/${train.exps_folder}/${train.folder}
   sweep:
-    dir: ${root_dir}/${train.exps_folder}/
+    dir: /data/abrar/3dgrounding/pointe_snare/lang_nerf/vlg/snare-master/${train.exps_folder}/
     subdir: ${train.folder}
 
-root_dir: /home/rcorona/2022/lang_nerf/vlg/snare-master # TODO Modify this as needed. 
+root_dir: /data/abrar/3dgrounding/snare 
 
 tag: default
 seed: 0
@@ -27,9 +27,11 @@ data:
   amt_data: '${root_dir}/amt/'
   folds: 'folds_adversarial'
 
-  clip_lang_feats: '${root_dir}/data/langfeat-512-clipViT32.json'
-  clip_img_feats: '${root_dir}/data/shapenet-clipViT32-frames.json'
-  clip_img_feat_dir: '${root_dir}/data/shapenet-clipViT32-frames/'
+  clip_lang_feats: '/misery/abrar/3dgrounding/snare/data/langfeat-512-clipViT32.json'
+  clip_img_feats: '/data/abrar/3dgrounding/snare/data/shapenet-clipViT32-frames.json'
+  clip_img_feat_dir: '/data/abrar/3dgrounding/snare/data/shapenet-clipViT32-frames/'
+
+  pointe_feats: '/data/abrar/3dgrounding/snare/data/pointe_feats/'
 
   voxel_reconstruction: False
 
@@ -43,16 +45,16 @@ trainer:
   max_steps: 10000000
 
 train:
-  exps_folder: 'exps'
+  exps_folder: 'snap'
   exp_name: 'match'
-  folder: ${train.feats_backbone}-${train.model}-${train.run_name}
+  folder: ${train.exp_name}
   run_name: ${train.aggregator.type}
   pretrained_model: ''
   model: 'single_cls'
   random_seed: 42
   log: False
   lr: 1e-3
-  batch_size: 320
+  batch_size: 64
   max_epochs: 50
   load_from_last_ckpt: False
   dropout: 0.1
@@ -63,6 +65,9 @@ train:
   val_freq: 100
   tiny_dataset: False
   shuffle: False
+
+  pragmatic: False
+
 
   aggregator:
     type: 'maxpool'

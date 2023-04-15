@@ -1066,8 +1066,9 @@ class CLIPGraspingDataset(torch.utils.data.Dataset):
             feats['obj_feats'] = (obj1_feats, obj2_feats)
 
         # with fifty percept probability, flip feats around
-        if (torch.rand(1) > 0.5).item() and self.mode == 'train':
-            feats['obj_feats'] = (feats['obj_feats'][1], feats['obj_feats'][0])
+        if (torch.rand(1) > 0.5).item() and self.mode == 'train' and self.cfg['train']['pragmatic']:
+            if 'obj_feats' in feats:
+                feats['obj_feats'] = (feats['obj_feats'][1], feats['obj_feats'][0])
 
             
             feats['img_feats'] = (feats['img_feats'][1], feats['img_feats'][0])
