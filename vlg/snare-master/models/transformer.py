@@ -990,8 +990,12 @@ class TransformerClassifier(LightningModule):
                     obj_token_embed = self.embed_token_type(2*torch.ones(obj1_enc.shape[:2]).long().to(obj1_enc.device))
                     
                     # concatenate object and image tokens. add language to the end
-                    obj1_in = torch.cat([obj1_enc+obj_token_embed, img1_feats+img_token_embed], dim=1)
-                    obj2_in = torch.cat([obj2_enc+obj_token_embed, img2_feats+img_token_embed, lang_enc+lang_token_embed], dim=1)
+                    if self.cfg['train']['no_3d_feats']:
+                        obj1_in = torch.cat([img1_feats+img_token_embed], dim=1)
+                        obj2_in = torch.cat([img2_feats+img_token_embed, lang_enc+lang_token_embed], dim=1)
+                    else:
+                        obj1_in = torch.cat([obj1_enc+obj_token_embed, img1_feats+img_token_embed], dim=1)
+                        obj2_in = torch.cat([obj2_enc+obj_token_embed, img2_feats+img_token_embed, lang_enc+lang_token_embed], dim=1)
                     
                     # pos encoding 0:16 is only for object/img features
                     # pos encoding 16: is for language tokens!
@@ -1025,10 +1029,14 @@ class TransformerClassifier(LightningModule):
 
                             # padding mask is 8 obj feats, 8 img feats
                             # then 8 obj feats, then 8 img feats, them language tokens!
-                            padding_mask[:,:8] = obj1_mask
-                            padding_mask[:,8:16] = obj1_mask
-                            padding_mask[:,16:24] = obj2_mask
-                            padding_mask[:,24:32] = obj2_mask
+                            if not  self.cfg['train']['no_3d_feats']:
+                                padding_mask[:,:8] = obj1_mask
+                                padding_mask[:,8:16] = obj1_mask
+                                padding_mask[:,16:24] = obj2_mask
+                                padding_mask[:,24:32] = obj2_mask
+                            else:
+                                padding_mask[:,:8] = obj1_mask
+                                padding_mask[:,8:16] = obj2_mask
 
                             # do i also need to zero out the inputs? i will just in case
                             # obj_in[:,:8][obj1_mask == True] = 0
@@ -1040,7 +1048,10 @@ class TransformerClassifier(LightningModule):
                             lang_mask = torch.rand(lang_feat.shape[:2]) < self.cfg['train']['lang_masking']
                             # lang_mask_expanded = lang_mask.unsqueeze(-1).expand_as(lang_enc).to(lang_enc.device)
                             # masked_feat = lang_enc.masked_fill(lang_mask_expanded, 0)  # replace masked values with 0
-                            padding_mask[:,32:] = lang_mask
+                            if not  self.cfg['train']['no_3d_feats']:
+                                padding_mask[:,32:] = lang_mask
+                            else:
+                                padding_mask[:,16:] = lang_mask
                             # obj_in[:,32:] = masked_feat
 
 
@@ -1051,9 +1062,14 @@ class TransformerClassifier(LightningModule):
 
                     # use maxpooling to get features for each object
                     # idea: potentially use language tokens in the max pool as well!
-                    feats1 = feats[:,:16]
-                    feats2 = feats[:,16:32]
-                    last_lang_feats = feats[:,32:]
+                    if self.cfg['train']['no_3d_feats']:
+                        feats1 = feats[:,:8]
+                        feats2 = feats[:,8:16]
+                        last_lang_feats = feats[:,16:]
+                    else:
+                        feats1 = feats[:,:16]
+                        feats2 = feats[:,16:32]
+                        last_lang_feats = feats[:,32:]
                     if self.cfg['train']['pooling'] == 'map':
                         feats1 = self.map_pooling(feats1)
                         feats2 = self.map_pooling(feats2)
@@ -1082,15 +1098,22 @@ class TransformerClassifier(LightningModule):
                     bz = lang_feat.size(0)
                     cls_token = self.cls_token.unsqueeze(0).expand(bz, 1, -1)
 
+                    # put images through fc layer
+                    img1_feats = self.img_fc(img1_n_feats)
+                    img2_feats = self.img_fc(img2_n_feats)
+
+
                     # Compute masks for transformer. 
                     cls_mask = torch.full((bz, 1), False).to('cuda')
                     lang_mask = (lang_tokens == 0.0).to('cuda')
                     obj_mask = torch.full((bz, obj1_enc.size(1)), False).to('cuda')
-                    padding_mask = torch.cat([lang_mask, obj_mask, cls_mask], dim=1).to('cuda')
+                    img_mask = torch.full((bz, img1_feats.size(1)), False).to('cuda')
+
+                    padding_mask = torch.cat([img_mask, obj_mask, lang_mask, cls_mask], dim=1).to('cuda')
 
                     # Pass tokens through transformer itself. 
-                    feats1 = torch.cat([lang_enc, obj1_enc, cls_token], dim=1)
-                    feats2 = torch.cat([lang_enc, obj2_enc, cls_token], dim=1)
+                    feats1 = torch.cat([img1_feats, obj1_enc, lang_enc, cls_token], dim=1)
+                    feats2 = torch.cat([img2_feats, obj2_enc, lang_enc, cls_token], dim=1)
 
                     feats1 = self.transformer_pass(feats1, padding_mask, max_length)
                     feats2 = self.transformer_pass(feats2, padding_mask, max_length)

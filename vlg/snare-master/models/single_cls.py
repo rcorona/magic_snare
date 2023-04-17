@@ -54,7 +54,7 @@ class SingleClassifier(LightningModule):
         self.best_test_res = None
 
         # results save path
-        self.save_path = Path(os.getcwd())
+        self.save_path = Path(os.path.join(os.getcwd(), 'checkpoints'))
         print('Checkpoint path: {}'.format(self.save_path))
 
 
@@ -117,8 +117,8 @@ class SingleClassifier(LightningModule):
                 'frequency': 1
         }
 
-        # return self.optimizer
-        return ([self.optimizer], [scheduler_cfg])
+        return self.optimizer
+        # return ([self.optimizer], [scheduler_cfg])
 
 
     def smoothed_cross_entropy(self, pred, target, alpha=0.1):

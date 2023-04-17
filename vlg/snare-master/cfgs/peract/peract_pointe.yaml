@@ -135,6 +135,8 @@ train:
   pragmatic: True
   pragmatic_joint_cls: False
 
+  no_3d_feats: False
+
   view_masking: 0
   lang_masking: 0
   pooling: 'max'
