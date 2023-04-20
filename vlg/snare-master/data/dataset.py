@@ -32,14 +32,17 @@ from dotmap import DotMap
 
 class CLIPGraspingDataset(torch.utils.data.Dataset):
 
-    def __init__(self, cfg, mode='train', legoformer_data_module=None, img_feat_file=None, obj2idx_mapping=None):
+    def __init__(self, cfg, mode='train', legoformer_data_module=None, img_feat_file=None, obj2idx_mapping=None, n_views=None):
         self.total_views = 14
         self.cfg = cfg
         self.mode = mode
         self.folds = os.path.join(self.cfg['data']['amt_data'], self.cfg['data']['folds'])
         self.feats_backbone = self.cfg['train']['feats_backbone']
 
-        self.n_views = self.cfg['data']['n_views']
+        if n_views == None:
+            self.n_views = self.cfg['data']['n_views']
+        else:
+            self.n_views = n_views
 
         print("Num views: {}".format(self.n_views))
 
@@ -940,6 +943,9 @@ class CLIPGraspingDataset(torch.utils.data.Dataset):
             # ab673912c47afe0afb8c9814b98c66d7-0_hidden.npy
             obj1_n_feats = self.get_pointe_feats(key1)
             obj2_n_feats = self.get_pointe_feats(key2)
+
+            obj1_n_feats = obj1_n_feats[view_idxs1]
+            obj2_n_feats = obj2_n_feats[view_idxs2]
 
             feats['obj_feats'] = (obj1_n_feats, obj2_n_feats)
         # Tokenize annotation if using a transformer.
