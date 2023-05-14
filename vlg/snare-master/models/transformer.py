@@ -1002,8 +1002,8 @@ class TransformerClassifier(LightningModule):
 
 
                     # temporarily commented out!
-                    obj1_in = self.pos_encoding[:,:obj1_in.size(1),:] + obj1_in
-                    obj2_in = self.pos_encoding[:,:obj2_in.size(1),:] + obj2_in
+                    # obj1_in = self.pos_encoding[:,:obj1_in.size(1),:] + obj1_in
+                    # obj2_in = self.pos_encoding[:,:obj2_in.size(1),:] + obj2_in
 
 
                     # put it into one big input
@@ -1021,6 +1021,12 @@ class TransformerClassifier(LightningModule):
                     padding_mask = torch.full((bz, obj_in.size(1)), False).to('cuda')
                     padding_mask[:,-lang_mask.shape[1]:] = lang_mask
 
+
+                    # if mode != 'train':
+                    #     import pdb; pdb.set_trace()
+
+                    num_views = img1_feats.shape[1]
+
                     if mode == 'train':
                         if self.cfg['train']['view_masking'] > 0:
                             # add view masking
@@ -1030,13 +1036,13 @@ class TransformerClassifier(LightningModule):
                             # padding mask is 8 obj feats, 8 img feats
                             # then 8 obj feats, then 8 img feats, them language tokens!
                             if not  self.cfg['train']['no_3d_feats']:
-                                padding_mask[:,:8] = obj1_mask
-                                padding_mask[:,8:16] = obj1_mask
-                                padding_mask[:,16:24] = obj2_mask
-                                padding_mask[:,24:32] = obj2_mask
+                                padding_mask[:,:num_views] = obj1_mask
+                                padding_mask[:,num_views:num_views*2] = obj1_mask
+                                padding_mask[:,num_views*2:num_views*3] = obj2_mask
+                                padding_mask[:,num_views*3:num_views*4] = obj2_mask
                             else:
-                                padding_mask[:,:8] = obj1_mask
-                                padding_mask[:,8:16] = obj2_mask
+                                padding_mask[:,:num_views] = obj1_mask
+                                padding_mask[:,num_views:num_views*2] = obj2_mask
 
                             # do i also need to zero out the inputs? i will just in case
                             # obj_in[:,:8][obj1_mask == True] = 0
@@ -1049,12 +1055,12 @@ class TransformerClassifier(LightningModule):
                             # lang_mask_expanded = lang_mask.unsqueeze(-1).expand_as(lang_enc).to(lang_enc.device)
                             # masked_feat = lang_enc.masked_fill(lang_mask_expanded, 0)  # replace masked values with 0
                             if not  self.cfg['train']['no_3d_feats']:
-                                padding_mask[:,32:] = lang_mask
+                                padding_mask[:,num_views*4:] = lang_mask
                             else:
-                                padding_mask[:,16:] = lang_mask
+                                padding_mask[:,num_views*2:] = lang_mask
                             # obj_in[:,32:] = masked_feat
 
-
+                    # import pdb; pdb.set_trace()
 
                     # run forward pass
                     feats = self.transformer(obj_in.permute(1, 0, 2), padding_mask)
@@ -1063,13 +1069,13 @@ class TransformerClassifier(LightningModule):
                     # use maxpooling to get features for each object
                     # idea: potentially use language tokens in the max pool as well!
                     if self.cfg['train']['no_3d_feats']:
-                        feats1 = feats[:,:8]
-                        feats2 = feats[:,8:16]
-                        last_lang_feats = feats[:,16:]
+                        feats1 = feats[:,:num_views]
+                        feats2 = feats[:,num_views:num_views*2]
+                        last_lang_feats = feats[:,num_views*2:]
                     else:
-                        feats1 = feats[:,:16]
-                        feats2 = feats[:,16:32]
-                        last_lang_feats = feats[:,32:]
+                        feats1 = feats[:,:num_views*2]
+                        feats2 = feats[:,num_views*2:num_views*4]
+                        last_lang_feats = feats[:,num_views*4:]
                     if self.cfg['train']['pooling'] == 'map':
                         feats1 = self.map_pooling(feats1)
                         feats2 = self.map_pooling(feats2)
@@ -1509,7 +1515,7 @@ class TransformerClassifier(LightningModule):
         
         return correct
 
-    def validation_step(self, batch, batch_idx):
+    def validation_step(self, batch, batch_idx, dataloader_idx=None):
         out = self.forward(batch)
         losses = self._criterion(out)
 
@@ -1754,6 +1760,9 @@ class TransformerClassifier(LightningModule):
         )
 
     def test_step(self, batch, batch_idx):
+        if self.trainer.test_dataloaders[0].dataset.mode == 'valid':
+            return self.validation_step(batch, batch_idx)
+
         all_view_results = {}
         
         out = self.forward(batch)
@@ -1789,6 +1798,9 @@ class TransformerClassifier(LightningModule):
         return res
 
     def test_epoch_end(self, all_outputs, mode='test'):
+        if self.trainer.test_dataloaders[0].dataset.mode == 'valid':
+            return_dict =  self.validation_epoch_end(all_outputs)
+            return return_dict
         res = {
             'val_loss': 0.0,
 

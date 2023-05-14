@@ -103,6 +103,18 @@ def main(cfg):
         val_dataloaders=DataLoader(valid, batch_size=cfg['train']['batch_size'], num_workers=8, shuffle=cfg['train']['shuffle']),
     )
 
+    # trainer.test(
+    #     test_dataloaders=DataLoader(valid_one_view, batch_size=cfg['train']['batch_size']),
+    #     ckpt_path='best'
+    # )
+
+    # import pdb; pdb.set_trace()
+
+    # trainer.test(
+    #     test_dataloaders=DataLoader(test, batch_size=cfg['train']['batch_size']),
+    #     ckpt_path='best'
+    # )
+
 if __name__ == "__main__":
     main()
     
