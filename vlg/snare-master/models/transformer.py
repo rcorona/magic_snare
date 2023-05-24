@@ -1072,6 +1072,48 @@ class TransformerClassifier(LightningModule):
                         feats1 = feats[:,:num_views]
                         feats2 = feats[:,num_views:num_views*2]
                         last_lang_feats = feats[:,num_views*2:]
+                        
+                        # START: contrastive loss
+
+                        correct_img_encodings = torch.cat( [feats1[ans.bool()], feats2[~ans.bool()]])
+                        #Don't need object encodings
+                        #correct_obj_encodings = torch.cat( [obj1_enc[ans.bool()], obj2_enc[~ans.bool()]])
+
+                        
+                        if self.cfg['train']['conloss_transformer']:
+                            #Can just use plain transformer language outputs
+                            #agg_lang_feat = last_lang_feats[torch.arange(last_lang_feats.shape[0]), lang_tokens.squeeze().argmax(dim=-1)] @ self.clip.text_projection
+                            agg_lang = torch.mean(last_lang_feats, 1) #Shape: (Batch, feat_dim)
+                        else:
+                            #using original language clip features
+                            agg_lang = self.lang_fc(agg_lang_feat.float()) #Shape: (Batch, feat_dim)
+                        #Just use reshaped language_output instead of passing through linear layer:
+                        
+                        # print(agg_lang.shape)
+                        # print(correct_img_encodings.shape)
+
+                        texts_similarity = agg_lang @ agg_lang.T
+
+                        contrastive_loss = 0
+                        for idx in range(8):
+                            logits = (agg_lang @ correct_img_encodings[:,idx].T) / 1.0
+                            images_similarity = correct_img_encodings[:,idx] @ correct_img_encodings[:,idx].T
+                            targets = F.softmax((images_similarity + texts_similarity) / 2 * 1, dim=-1)
+                            texts_loss = cross_entropy(logits, targets, reduction='none').mean()
+                            images_loss = cross_entropy(logits.T, targets.T, reduction='none').mean()
+                            contrastive_loss +=  (images_loss + texts_loss) / 2.0 
+
+                        # Don't need object contrastive loss with no_3d_feats:
+                        # for idx in range(8):
+                        #     logits = (agg_lang @ correct_obj_encodings[:,idx].T) / 1.0
+                        #     obj_similarity = correct_obj_encodings[:,idx] @ correct_obj_encodings[:,idx].T
+                        #     targets = F.softmax((obj_similarity + texts_similarity) / 2 * 1, dim=-1)
+                        #     texts_loss = cross_entropy(logits, targets, reduction='none').mean()
+                        #     obj_loss = cross_entropy(logits.T, targets.T, reduction='none').mean()
+                        #     contrastive_loss +=  (images_loss + obj_loss) / 2.0 
+
+                        contrastive_loss = contrastive_loss*self.cfg['train']['conloss_weight']
+                        # DONE: contrastive loss
                     else:
                         feats1 = feats[:,:num_views*2]
                         feats2 = feats[:,num_views*2:num_views*4]
