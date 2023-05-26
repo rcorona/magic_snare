@@ -141,6 +141,7 @@ train:
   lang_masking: 0
   pooling: 'max'
   
+  conloss: False
   conloss_transformer: True
   conloss_weight: 10e-5
 
