@@ -881,6 +881,7 @@ class CLIPGraspingDataset(torch.utils.data.Dataset):
         # Will return features in dictionary form. 
         feats = dict()
         entry = self.data[idx]
+        
 
         # get keys
         entry_idx = entry['ans'] if 'ans' in entry else -1 # test set does not contain answers
@@ -898,7 +899,7 @@ class CLIPGraspingDataset(torch.utils.data.Dataset):
 
                 if key2 != key1:
                     break
-        
+       
         # annotation
         annotation = entry['annotation']
         feats['annotation'] = annotation
@@ -1086,5 +1087,206 @@ class CLIPGraspingDataset(torch.utils.data.Dataset):
             # Keys
             feats['keys'] = (feats['keys'][1], feats['keys'][0])
 
+
+        return feats
+
+#Double Dipping:
+class CLIPGraspingDatasetMultiObj(CLIPGraspingDataset):
+    def __init__(self, cfg, mode='train', legoformer_data_module=None, img_feat_file=None, obj2idx_mapping=None, n_objs=2, n_views=None):
+        super().__init__(cfg, mode='train', legoformer_data_module=None, img_feat_file=None, obj2idx_mapping=None, n_views=None)
+        self.n_objs = n_objs
+    def __getitem__(self, idx):
+
+        if self.cfg['train']['tiny_dataset']:
+            idx = idx % self.cfg['train']['batch_size']
+        
+        # Add more examples for stability if different view combinations are possible. 
+        if self.n_views != 8 and self.mode != 'train': 
+            idx = idx // 10
+                
+        
+        
+        # Will return features in dictionary form. 
+        feats = dict()
+        entry = self.data[idx]
+    
+
+        # get keys
+        entry_idx = entry['ans'] if 'ans' in entry else -1 # test set does not contain answers
+        if len(entry['objects']) == 2:
+            key1, key2 = entry['objects']
+
+        # fix missing key in pair by sampling alternate different object from data. 
+        else:
+            key1 = entry['objects'][entry_idx]
+
+            while True:
+
+                alt_entry = self.data[np.random.choice(len(self.data))]
+                key2 = np.random.choice(alt_entry['objects'])
+
+                if key2 != key1:
+                    break
+        
+        # annotation
+        annotation = entry['annotation']
+        feats['annotation'] = annotation
+
+        # test set does not have labels for visual and non-visual categories
+        feats['is_visual'] = entry['visual'] if 'ans' in entry else -1
+
+        # Don't need to be random if we have all views. 
+        # if self.n_views == 8: 
+        #     view_idxs1 = np.arange(self.n_views)
+        #     view_idxs2 = np.arange(self.n_views)
+        # else: 
+        #     # Select view indexes randomly # TODO need to select them consistently for evaluation.
+        view_idxs1 = np.random.choice(8, self.n_views, replace=False)
+        view_idxs2 = np.random.choice(8, self.n_views, replace=False)
+        
+        ## Img feats
+        # For CLIP filter to use only desired amount of views (in this case 8). 
+        if self.use_img_feats: 
+            start_idx = 6 # discard first 6 views that are top and bottom viewpoints
+            img1_n_feats = torch.from_numpy(self.get_img_feats(key1))[start_idx:]
+            img2_n_feats = torch.from_numpy(self.get_img_feats(key2))[start_idx:]
+    
+            # Pick out sampled views. 
+            img1_n_feats = img1_n_feats[view_idxs1]
+            img2_n_feats = img2_n_feats[view_idxs2]
+
+            feats['img_feats'] = (img1_n_feats, img2_n_feats)
+
+        
+        use_lang_toks = self.cfg['train']['model'] == 'transformer' or \
+                self.cfg['train']['model'] == 'pixelnerf' or \
+                self.cfg['train']['model'] == 'lfn' or \
+                self.cfg['train']['model'] == 'pointe'
+
+
+        if use_lang_toks:
+            feats['lang_tokens'] = clip.tokenize(feats['annotation'])
+        else: 
+            feats['lang_feats'] = torch.from_numpy(np.array(self.lang_feats[annotation]))
+
+        # label
+        feats['ans'] = entry_idx
+    
+        # Keys
+        feats['keys'] = (key1, key2)
+
+        #If we need additional distractors:
+        if self.n_objs > 2:
+            extra_distractors = dict()
+            options = list(range(len(self.data)))
+            options.remove(idx)
+
+            sample_num = (self.n_objs - 1)//2
+            distractor_indices = np.random.choice(options, size=sample_num, replace=False)
+
+            is_odd = 1 - (self.n_objs%2)
+
+            extra_distractors['keys'] = []
+            extra_distractors['annotations'] = []
+            extra_distractors['img_feats'] = []
+            extra_distractors['lang_tokens'] = []
+            extra_distractors['lang_feats'] = []
+            for i in distractor_indices:
+                cur_entry = self.data[i]
+                entry_idx = cur_entry['ans'] if 'ans' in cur_entry else -1 # test set does not contain answers
+                
+                if len(cur_entry['objects'])==2:
+                    key1, key2 = cur_entry['objects']
+                else:
+                    key1 = cur_entry['objects'][entry_idx]
+                    alt_entry = i
+                    while alt_entry in distractor_indices:
+                        alt_entry = np.random.choice(len(self.data))
+                        
+                    key2 = np.random.choice(self.data[alt_entry]['objects'])
+                
+                annotation = cur_entry['annotation']
+                extra_distractors['keys'].extend([key1, key2])
+                extra_distractors['annotations'].append(annotation)
+
+                view_idxs1 = np.random.choice(8, self.n_views, replace=False)
+                view_idxs2 = np.random.choice(8, self.n_views, replace=False)
+                
+                ## Img feats
+                # For CLIP filter to use only desired amount of views (in this case 8). 
+                if self.use_img_feats: 
+                    start_idx = 6 # discard first 6 views that are top and bottom viewpoints
+                    img1_n_feats = torch.from_numpy(self.get_img_feats(key1))[start_idx:]
+                    img2_n_feats = torch.from_numpy(self.get_img_feats(key2))[start_idx:]
+            
+                    # Pick out sampled views. 
+                    img1_n_feats = img1_n_feats[view_idxs1]
+                    img2_n_feats = img2_n_feats[view_idxs2]
+
+                    extra_distractors['img_feats'].extend([img1_n_feats, img2_n_feats])
+
+                    use_lang_toks = self.cfg['train']['model'] == 'transformer' or \
+                        self.cfg['train']['model'] == 'pixelnerf' or \
+                        self.cfg['train']['model'] == 'lfn' or \
+                        self.cfg['train']['model'] == 'pointe'
+
+
+                    if use_lang_toks:
+                        extra_distractors['lang_tokens'].append(clip.tokenize(annotation))
+                    else: 
+                        extra_distractors['lang_feats'].append(torch.from_numpy(np.array(self.lang_feats[annotation])))
+
+            if is_odd:
+                extra_distractors['keys'].pop()
+                extra_distractors['img_feats'].pop()
+            
+            final_keys = []
+            final_keys.extend(feats['keys'])
+            final_keys.extend(extra_distractors['keys'])
+
+            final_img_feats = []
+            final_img_feats.extend(feats['img_feats'])
+            final_img_feats.extend(extra_distractors['img_feats'])
+
+            ans_idx = feats['ans']
+            shuffle_idxs = list(np.random.choice(self.n_objs, size=self.n_objs, replace=False))
+
+            ans_idx = shuffle_idxs.index(ans_idx)
+            final_keys = [final_keys[j] for j in shuffle_idxs]
+            final_img_feats = [final_img_feats[j] for j in shuffle_idxs]
+
+            feats['img_feats'] = final_img_feats
+            feats['keys'] = final_keys
+            feats['ans'] = ans_idx
+            feats['alt_annotations'] = extra_distractors['annotations']
+            feats['alt_lang_tokens'] = extra_distractors['lang_tokens']
+            feats['alt_lang_feats'] = extra_distractors['lang_feats']
+
+        else:
+            # with fifty percept probability, flip feats around
+            if (torch.rand(1) > 0.5).item() and self.mode == 'train' and self.cfg['train']['pragmatic']:
+                if 'obj_feats' in feats:
+                    feats['obj_feats'] = (feats['obj_feats'][1], feats['obj_feats'][0])
+
+                
+                feats['img_feats'] = (feats['img_feats'][1], feats['img_feats'][0])
+
+
+                # label
+                feats['ans'] = 1 - feats['ans'] # not it
+            
+                # Keys
+                feats['keys'] = (feats['keys'][1], feats['keys'][0])
+
+        #Not necessary, lol. Just that we load pointe feats regardless of our flag - maybe something to change
+        if self.feats_backbone == 'pointe':
+            # ab673912c47afe0afb8c9814b98c66d7-0_hidden.npy
+            obj1_n_feats = self.get_pointe_feats(key1)
+            obj2_n_feats = self.get_pointe_feats(key2)
+
+            obj1_n_feats = obj1_n_feats[view_idxs1]
+            obj2_n_feats = obj2_n_feats[view_idxs2]
+
+            feats['obj_feats'] = (obj1_n_feats, obj2_n_feats)
 
         return feats
