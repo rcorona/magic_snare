@@ -1,11 +1,11 @@
 hydra:
   run:
-    dir: /data/abrar/3dgrounding/pointe_snare/lang_nerf/vlg/snare-master/${train.exps_folder}/${train.folder}
+    dir: /home/chancharikm/lang_nerf2/lang_nerf/vlg/snare-master/${train.exps_folder}/${train.folder}
   sweep:
-    dir: /data/abrar/3dgrounding/pointe_snare/lang_nerf/vlg/snare-master/${train.exps_folder}/
+    dir: /home/chancharikm/lang_nerf2/lang_nerf/vlg/snare-master/${train.exps_folder}/
     subdir: ${train.folder}
 
-root_dir: /data/abrar/3dgrounding/snare 
+root_dir: /home/chancharikm/lang_nerf/vlg/snare-master
 
 tag: default
 seed: 0
@@ -40,12 +40,12 @@ data:
   folds: 'folds_adversarial'
   voxel_reconstruction: False
 
-  clip_lang_feats: '/misery/abrar/3dgrounding/snare/data/langfeat-512-clipViT32.json'
+  clip_lang_feats: '${root_dir}/data/langfeat-512-clipViT32.json'
   clip_lang_feat_dir: '${root_dir}/data/langfeat-512-clipViT32'
-  clip_img_feats: '/data/abrar/3dgrounding/snare/data/shapenet-clipViT32-frames.json'
-  clip_img_feat_dir: '/data/abrar/3dgrounding/snare/data/shapenet-clipViT32-frames/'
+  clip_img_feats: '${root_dir}/data/shapenet-clipViT32-frames.json'
+  clip_img_feat_dir: '${root_dir}/data/shapenet-clipViT32-frames/'
 
-  pointe_feats: '/data/abrar/3dgrounding/snare/data/pointe_feats/'
+  pointe_feats: '${root_dir}/data/pointe_feats/'
   
   # TODO is this deprecated?
   legoformer_feats-8: '${root_dir}/data/8-view_embeddings.json' 
@@ -70,6 +70,7 @@ data:
 
   use_precomputed_voxels: True
 
+  n_objs: 2
   n_views: 8
 
 transformer: 
@@ -140,7 +141,7 @@ train:
   view_masking: 0
   lang_masking: 0
   pooling: 'max'
-  
+
   conloss: False
   conloss_transformer: True
   conloss_weight: 10e-5
