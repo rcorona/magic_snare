@@ -13,8 +13,9 @@ import torch
 import models
 from torch.utils.data import DataLoader
 import wandb
+import sys
 
-from data.dataset import CLIPGraspingDataset
+from data.dataset import CLIPGraspingDataset, CLIPGraspingDatasetMultiObj
 from legoformer import LegoFormerM, LegoFormerS
 from legoformer.util.utils import load_config
 from legoformer.data.datamodule import ShapeNetDataModule
@@ -52,9 +53,14 @@ def main(cfg):
         data_module = ShapeNetDataModule(legoformer_cfg.data)
     
     # dataset
-    train = CLIPGraspingDataset(cfg, mode='train', legoformer_data_module=data_module)
-    valid = CLIPGraspingDataset(cfg, mode='valid')
-    test = CLIPGraspingDataset(cfg, mode='test')
+    # train = CLIPGraspingDataset(cfg, mode='train', legoformer_data_module=data_module)
+    # valid = CLIPGraspingDataset(cfg, mode='valid')
+    # test = CLIPGraspingDataset(cfg, mode='test')
+
+    train = CLIPGraspingDatasetMultiObj(cfg, mode='train', legoformer_data_module=data_module, n_objs=cfg['data']['n_jobs'])
+    valid = CLIPGraspingDatasetMultiObj(cfg, mode='valid', n_objs=cfg['data']['n_jobs'])
+    test = CLIPGraspingDatasetMultiObj(cfg, mode='test', n_objs=cfg['data']['n_jobs'])
+
 
     fname = '{epoch:04d}-{val_acc:.5f}'
 
