@@ -57,9 +57,9 @@ def main(cfg):
     # valid = CLIPGraspingDataset(cfg, mode='valid')
     # test = CLIPGraspingDataset(cfg, mode='test')
 
-    train = CLIPGraspingDatasetMultiObj(cfg, mode='train', legoformer_data_module=data_module, n_objs=cfg['data']['n_jobs'])
-    valid = CLIPGraspingDatasetMultiObj(cfg, mode='valid', n_objs=cfg['data']['n_jobs'])
-    test = CLIPGraspingDatasetMultiObj(cfg, mode='test', n_objs=cfg['data']['n_jobs'])
+    train = CLIPGraspingDatasetMultiObj(cfg, mode='train', legoformer_data_module=data_module, n_objs=cfg['data']['n_objs'])
+    valid = CLIPGraspingDatasetMultiObj(cfg, mode='valid', n_objs=cfg['data']['n_objs'])
+    test = CLIPGraspingDatasetMultiObj(cfg, mode='test', n_objs=cfg['data']['n_objs'])
 
 
     fname = '{epoch:04d}-{val_acc:.5f}'
