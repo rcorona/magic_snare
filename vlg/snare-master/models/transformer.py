@@ -244,6 +244,7 @@ class TransformerClassifier(LightningModule):
         self.lang_feat_dim = 512
         self.feat_dim = 256
         self.num_views = 8
+        self.n_objs = self.cfg['data']['n_objs']
         
         if self.cfg['data']['use_rgb_pc']:
             self.feat_dim = 64
@@ -678,29 +679,32 @@ class TransformerClassifier(LightningModule):
         imgs = batch['images'] if 'images' in batch else None
         vgg16_feats = batch['vgg16_feats'] if 'vgg16_feats' in batch else None
         lang_tokens = batch['lang_tokens'].cuda()
+        # print(f"lang_tokens shape {lang_tokens.shape}")
         voxel_maps = batch['voxel_maps'] if 'voxel_maps' in batch else None
         voxel_masks= batch['voxel_masks'] if 'voxel_masks' in batch else None
 
         ans = batch['ans'].cuda()
-        (key1, key2) =  batch['keys']
+        #(key1, key2) =  batch['keys']
         annotation = batch['annotation']
         is_visual = batch['is_visual']
 
 
         contrastive_loss = 0
-
+        
         # TODO do we want to feed all of these into transformer, or just the aggregate? 
-        # Load, aggregate, and process img features. 
+        # Load and aggregate image features: 
         if img_feats: 
-            img1_n_feats = img_feats[0].to(device=self.device).float()
-            img2_n_feats = img_feats[1].to(device=self.device).float()  
+            # img1_n_feats = img_feats[0].to(device=self.device).float()
+            # img2_n_feats = img_feats[1].to(device=self.device).float()  
 
-            img1_feats = self.aggregator(img1_n_feats)
-            img2_feats = self.aggregator(img2_n_feats)
+            # img1_feats = self.aggregator(img1_n_feats)
+            # img2_feats = self.aggregator(img2_n_feats)
 
-            # Project into shared embedding space. 
-            #img1_feats = self.img_fc(img1_feats)
-            #img2_feats = self.img_fc(img2_feats)
+            img_n_feats = [] #vectorized version
+            img_feats_agg = []
+            for i in range(len(img_feats)):
+                img_n_feats.append(img_feats[i].to(device=self.device).float())
+                img_feats_agg.append(self.aggregator(img_feats[i].to(device=self.device).float()))
 
         # Generate object features using legoformer.  
         # Right now we assume we've precomputed the VGG16 features and don't use raw images. 
@@ -768,8 +772,11 @@ class TransformerClassifier(LightningModule):
 
         # lang encoding with clip. # TODO Why doesn't CLIP mask zero-tokens? 
         # Aggregate CLIP langauge. 
+        # print(f"Lang_feat {lang_feat} \n\nLang_feat size{lang_feat.shape}\n\n")
+        # print(f"torch.arange() {torch.arange(lang_feat.shape[0])} \n\nlang_tokens_squeeze_argmax { lang_tokens.squeeze().argmax(dim=-1)} \n\n Lang_feat indexed shape {lang_feat[torch.arange(lang_feat.shape[0]), lang_tokens.squeeze().argmax(dim=-1)].shape}\n\n")
+        # print(f"self.clip.text_projection {self.clip.text_projection} \n\n Shape {self.clip.text_projection.shape} \n\n")
         agg_lang_feat = lang_feat[torch.arange(lang_feat.shape[0]), lang_tokens.squeeze().argmax(dim=-1)] @ self.clip.text_projection
-
+        # print(f"agg_lang_feat shape {agg_lang_feat.shape}\n\n")
         if not self.cfg['transformer']['skip_clip']:
             
 
@@ -836,7 +843,7 @@ class TransformerClassifier(LightningModule):
                 # Positional encoding and input prep. 
                 lang_token_embed = self.embed_token_type(torch.zeros(lang_enc.shape[:2]).long().to(lang_enc.device))
                 img_token_embed = self.embed_token_type(torch.ones(img1_feats.shape[:2]).long().to(img1_feats.device))
-                obj_token_embed = self.embed_token_type(2*torch.ones(obj1_enc.shape[:2]).long().to(obj1_enc.device))
+                obj_token_embed = self.embed_token_type(2*torch.ones(obj1_enc.shape[:2]).long().to(obj1_enc.device)) 
 
                 # pragmatic using peract
                 if self.cfg['train']['pragmatic']:
@@ -951,8 +958,10 @@ class TransformerClassifier(LightningModule):
 
 
                     # put images through fc layer
-                    img1_feats = self.img_fc(img1_n_feats)
-                    img2_feats = self.img_fc(img2_n_feats)
+                    # img1_feats = self.img_fc(img1_n_feats) #vectorize
+                    # img2_feats = self.img_fc(img2_n_feats)
+                    
+                    img_feats = [self.img_fc(each) for each in img_n_feats] #vectorized version
 
 
                     # # START: contrastive loss
@@ -986,13 +995,19 @@ class TransformerClassifier(LightningModule):
 
                     # add token embeddings
                     lang_token_embed = self.embed_token_type(torch.zeros(lang_enc.shape[:2]).long().to(lang_enc.device))
-                    img_token_embed = self.embed_token_type(torch.ones(img1_feats.shape[:2]).long().to(img1_feats.device))
+                    img_token_embed = self.embed_token_type(torch.ones(img_feats[0].shape[:2]).long().to(img_feats[0].device)) #vectorized change here
                     obj_token_embed = self.embed_token_type(2*torch.ones(obj1_enc.shape[:2]).long().to(obj1_enc.device))
                     
                     # concatenate object and image tokens. add language to the end
-                    if self.cfg['train']['no_3d_feats']:
-                        obj1_in = torch.cat([img1_feats+img_token_embed], dim=1)
-                        obj2_in = torch.cat([img2_feats+img_token_embed, lang_enc+lang_token_embed], dim=1)
+                    if self.cfg['train']['no_3d_feats']: #vectorize
+                        # obj1_in = torch.cat([img1_feats+img_token_embed], dim=1)
+                        # obj2_in = torch.cat([img2_feats+img_token_embed, lang_enc+lang_token_embed], dim=1)
+                        objects = []
+                        for i in range(self.n_objs):
+                            if i != self.n_objs - 1:
+                                objects.append(torch.cat([img_feats[i]+img_token_embed], dim=1)) #torch.cat doesn't seem necessary here (i.e. has no effect)
+                            else:
+                                objects.append(torch.cat([img_feats[i]+img_token_embed, lang_enc+lang_token_embed], dim=1))
                     else:
                         obj1_in = torch.cat([obj1_enc+obj_token_embed, img1_feats+img_token_embed], dim=1)
                         obj2_in = torch.cat([obj2_enc+obj_token_embed, img2_feats+img_token_embed, lang_enc+lang_token_embed], dim=1)
@@ -1007,8 +1022,9 @@ class TransformerClassifier(LightningModule):
 
 
                     # put it into one big input
-                    obj_in = torch.cat([obj1_in, obj2_in], dim=1)
-
+                    # obj_in = torch.cat([obj1_in, obj2_in], dim=1) #vectorize
+                    obj_in = torch.cat(objects, dim=1)
+                    
                     # Concatenate tokens for transformer. 
                     bz = lang_feat.size(0)
                     # cls_token = self.cls_token.unsqueeze(0).expand(bz, 1, -1)
@@ -1025,24 +1041,31 @@ class TransformerClassifier(LightningModule):
                     # if mode != 'train':
                     #     import pdb; pdb.set_trace()
 
-                    num_views = img1_feats.shape[1]
-
+                    # num_views = img1_feats.shape[1] #vectorize
+                    num_views = img_feats[0].shape[1]
+                    #print(f'IMG1_feats SHAPE{img1_feats.shape} IMG2_FEATS_SHAPE {img2_feats.shape}')
                     if mode == 'train':
                         if self.cfg['train']['view_masking'] > 0:
                             # add view masking
-                            obj1_mask = torch.rand((len(padding_mask),8)) < self.cfg['train']['view_masking']
-                            obj2_mask = torch.rand((len(padding_mask),8)) < self.cfg['train']['view_masking']
+                            # obj1_mask = torch.rand((len(padding_mask),8)) < self.cfg['train']['view_masking'] #vectorize
+                            # obj2_mask = torch.rand((len(padding_mask),8)) < self.cfg['train']['view_masking']
+
+                            obj_masks = [torch.rand((len(padding_mask),8)) < self.cfg['train']['view_masking'] for i in range(self.n_objs)] #vectorized version
 
                             # padding mask is 8 obj feats, 8 img feats
                             # then 8 obj feats, then 8 img feats, them language tokens!
-                            if not  self.cfg['train']['no_3d_feats']:
+                            if not self.cfg['train']['no_3d_feats']:
                                 padding_mask[:,:num_views] = obj1_mask
                                 padding_mask[:,num_views:num_views*2] = obj1_mask
                                 padding_mask[:,num_views*2:num_views*3] = obj2_mask
                                 padding_mask[:,num_views*3:num_views*4] = obj2_mask
                             else:
-                                padding_mask[:,:num_views] = obj1_mask
-                                padding_mask[:,num_views:num_views*2] = obj2_mask
+                                # padding_mask[:,:num_views] = obj1_mask #vectorize
+                                # padding_mask[:,num_views:num_views*2] = obj2_mask
+                                for i in range(self.n_objs): #vectorized version
+                                    start = i * num_views
+                                    end = (i + 1) * num_views
+                                    padding_mask[:, start:end] = obj_masks[i]
 
                             # do i also need to zero out the inputs? i will just in case
                             # obj_in[:,:8][obj1_mask == True] = 0
@@ -1054,10 +1077,11 @@ class TransformerClassifier(LightningModule):
                             lang_mask = torch.rand(lang_feat.shape[:2]) < self.cfg['train']['lang_masking']
                             # lang_mask_expanded = lang_mask.unsqueeze(-1).expand_as(lang_enc).to(lang_enc.device)
                             # masked_feat = lang_enc.masked_fill(lang_mask_expanded, 0)  # replace masked values with 0
-                            if not  self.cfg['train']['no_3d_feats']:
+                            if not self.cfg['train']['no_3d_feats']:
                                 padding_mask[:,num_views*4:] = lang_mask
                             else:
-                                padding_mask[:,num_views*2:] = lang_mask
+                                # padding_mask[:,num_views*2:] = lang_mask #vectorize
+                                padding_mask[:, self.n_objs * num_views:] = lang_mask
                             # obj_in[:,32:] = masked_feat
 
                     # import pdb; pdb.set_trace()
@@ -1069,19 +1093,29 @@ class TransformerClassifier(LightningModule):
                     # use maxpooling to get features for each object
                     # idea: potentially use language tokens in the max pool as well!
                     if self.cfg['train']['no_3d_feats']:
-                        feats1 = feats[:,:num_views]
-                        feats2 = feats[:,num_views:num_views*2]
-                        last_lang_feats = feats[:,num_views*2:]
-                        
+                        #Transformer Output Features:
+
+                        feats1 = feats[:,:num_views] #vectorize
+                        # feats2 = feats[:,num_views:num_views*2]
+                        # last_lang_feats = feats[:,num_views*2:]
+                        output_feats = []
+                        for i in range(self.n_objs): #vectorized version
+                            start = i * num_views
+                            end = (i + 1) * num_views
+                            output_feats.append(feats[:, start:end])
+                        last_lang_feats = feats[:, self.n_objs * num_views:]
+
+                        #print(f"Last Lang Feats Shape \n\n{last_lang_feats.shape}")
+                        #print(f"Last IMG Feats Shape 1 {feats1.shape}  2 {feats2.shape}")
+                        #exit()
                         if self.cfg['train']['conloss']:
-                        
                             # START: contrastive loss
 
                             correct_img_encodings = torch.cat( [feats1[ans.bool()], feats2[~ans.bool()]])
                             #Don't need object encodings
                             #correct_obj_encodings = torch.cat( [obj1_enc[ans.bool()], obj2_enc[~ans.bool()]])
 
-
+                            
                             if self.cfg['train']['conloss_transformer']:
                                 #Can just use plain transformer language outputs
                                 #agg_lang_feat = last_lang_feats[torch.arange(last_lang_feats.shape[0]), lang_tokens.squeeze().argmax(dim=-1)] @ self.clip.text_projection
@@ -1090,7 +1124,7 @@ class TransformerClassifier(LightningModule):
                                 #using original language clip features
                                 agg_lang = self.lang_fc(agg_lang_feat.float()) #Shape: (Batch, feat_dim)
                             #Just use reshaped language_output instead of passing through linear layer:
-
+                            
                             # print(agg_lang.shape)
                             # print(correct_img_encodings.shape)
 
@@ -1116,16 +1150,20 @@ class TransformerClassifier(LightningModule):
 
                             contrastive_loss = contrastive_loss*self.cfg['train']['conloss_weight']
                             # DONE: contrastive loss
+                        
                     else:
                         feats1 = feats[:,:num_views*2]
                         feats2 = feats[:,num_views*2:num_views*4]
                         last_lang_feats = feats[:,num_views*4:]
+
+                    #final pooling step!
                     if self.cfg['train']['pooling'] == 'map':
                         feats1 = self.map_pooling(feats1)
                         feats2 = self.map_pooling(feats2)
                     elif self.cfg['train']['pooling'] == 'max':
-                        feats1 = feats1.max(1)[0]
-                        feats2 = feats2.max(1)[0]
+                        # feats1 = feats1.max(1)[0] #vectorize
+                        # feats2 = feats2.max(1)[0]
+                        output_feats = [each.max(1)[0] for each in output_feats] #vectorized version
                     elif self.cfg['train']['pooling'] == 'mean':
                         feats1 = feats1.mean(1)
                         feats2 = feats2.mean(1)
@@ -1205,10 +1243,13 @@ class TransformerClassifier(LightningModule):
             lang_mask = None
 
         # Score each object. 
-        score1 = self.cls_fc(feats1)
-        score2 = self.cls_fc(feats2)
+        # score1 = self.cls_fc(feats1) #vectorize
+        # score2 = self.cls_fc(feats2)
 
-        probs = torch.cat([score1, score2], dim=-1)
+        # probs = torch.cat([score1, score2], dim=-1)
+
+        scores = [self.cls_fc(each) for each in output_feats]
+        probs = torch.cat(scores, dim=-1)
 
         # num steps taken (8 for all views)
         # TODO what does this do???
